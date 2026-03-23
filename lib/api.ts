@@ -1,6 +1,7 @@
 import type {
   AskChatRequest,
   AskChatResponse,
+  ChunkPreviewResponse,
   ConversationItem,
   DocumentItem,
   KnowledgeBaseItem,
@@ -177,6 +178,14 @@ export const documentsApi = {
       token,
       formData,
     });
+  },
+  getChunkPreview(token: string, documentId: number, chunkId: number) {
+    return request<ChunkPreviewResponse>(
+      `/api/documents/${documentId}/chunks/${chunkId}/preview`,
+      {
+        token,
+      },
+    );
   },
 };
 

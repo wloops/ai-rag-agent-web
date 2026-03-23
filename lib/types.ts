@@ -53,10 +53,25 @@ export interface ConversationItem {
 }
 
 export interface ChatCitationItem {
+  chunk_id: number | null;
   document_id: number;
   filename: string;
   chunk_index: number;
+  start_offset: number | null;
+  end_offset: number | null;
   snippet: string | null;
+}
+
+export interface ChunkPreviewResponse {
+  document_id: number;
+  chunk_id: number;
+  filename: string;
+  chunk_index: number;
+  start_offset: number;
+  end_offset: number;
+  preview_text: string;
+  highlight_start_offset: number;
+  highlight_end_offset: number;
 }
 
 export interface RetrievedChunkDebugItem {
