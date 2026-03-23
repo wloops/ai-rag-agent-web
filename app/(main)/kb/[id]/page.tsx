@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -10,10 +10,11 @@ import {
   FileText,
   Filter,
   Loader2,
-  MoreHorizontal,
   Search,
   Settings,
+  Trash2,
   UploadCloud,
+  X,
   XCircle,
 } from "lucide-react";
 import clsx from "clsx";
@@ -22,6 +23,11 @@ import { useAuth } from "@/components/auth-provider";
 import { ApiError, documentsApi, kbApi } from "@/lib/api";
 import { formatDateTime, formatDocumentStatus, formatFileType } from "@/lib/format";
 import type { DocumentItem, KnowledgeBaseItem } from "@/lib/types";
+
+interface KnowledgeBaseFormState {
+  name: string;
+  description: string;
+}
 
 function StatusBadge({ status }: { status: string }) {
   const config = {
@@ -63,17 +69,27 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function KBDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const { token } = useAuth();
   const inputRef = useRef<HTMLInputElement>(null);
   const knowledgeBaseId = Number(params.id);
 
-  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
+  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBaseItem | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [formState, setFormState] = useState<KnowledgeBaseFormState>({
+    name: "",
+    description: "",
+  });
+  const [formError, setFormError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     const currentToken = token ?? "";
@@ -88,17 +104,23 @@ export default function KBDetailPage() {
       setError("");
 
       try {
-        const [kbItems, documentItems] = await Promise.all([
-          kbApi.list(currentToken),
+        const [knowledgeBaseItem, documentItems] = await Promise.all([
+          kbApi.get(currentToken, knowledgeBaseId),
           documentsApi.list(currentToken, knowledgeBaseId),
         ]);
         if (isMounted) {
-          setKnowledgeBases(kbItems);
+          setKnowledgeBase(knowledgeBaseItem);
           setDocuments(documentItems);
+          setFormState({
+            name: knowledgeBaseItem.name,
+            description: knowledgeBaseItem.description ?? "",
+          });
         }
       } catch (loadError) {
         if (isMounted) {
           setError(loadError instanceof ApiError ? loadError.message : "知识库详情加载失败。");
+          setKnowledgeBase(null);
+          setDocuments([]);
         }
       } finally {
         if (isMounted) {
@@ -113,11 +135,6 @@ export default function KBDetailPage() {
       isMounted = false;
     };
   }, [knowledgeBaseId, token]);
-
-  const knowledgeBase = useMemo(
-    () => knowledgeBases.find((item) => item.id === knowledgeBaseId) ?? null,
-    [knowledgeBaseId, knowledgeBases],
-  );
 
   const filteredDocuments = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -135,6 +152,11 @@ export default function KBDetailPage() {
     );
   }, [documents, query]);
 
+  async function refreshDocuments(currentToken: string) {
+    const updatedDocuments = await documentsApi.list(currentToken, knowledgeBaseId);
+    setDocuments(updatedDocuments);
+  }
+
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     const currentToken = token ?? "";
@@ -147,8 +169,13 @@ export default function KBDetailPage() {
 
     try {
       await documentsApi.upload(currentToken, knowledgeBaseId, file);
-      const updatedDocuments = await documentsApi.list(currentToken, knowledgeBaseId);
-      setDocuments(updatedDocuments);
+      await refreshDocuments(currentToken);
+      const refreshedKnowledgeBase = await kbApi.get(currentToken, knowledgeBaseId);
+      setKnowledgeBase(refreshedKnowledgeBase);
+      setFormState({
+        name: refreshedKnowledgeBase.name,
+        description: refreshedKnowledgeBase.description ?? "",
+      });
     } catch (uploadErrorValue) {
       setUploadError(
         uploadErrorValue instanceof ApiError
@@ -158,6 +185,52 @@ export default function KBDetailPage() {
     } finally {
       setIsUploading(false);
       event.target.value = "";
+    }
+  }
+
+  async function handleSaveSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const currentToken = token ?? "";
+    if (!currentToken || !knowledgeBase) {
+      return;
+    }
+
+    setFormError("");
+    setIsSaving(true);
+
+    try {
+      const updated = await kbApi.update(currentToken, knowledgeBase.id, {
+        name: formState.name.trim(),
+        description: formState.description.trim() || null,
+      });
+      setKnowledgeBase(updated);
+      setFormState({
+        name: updated.name,
+        description: updated.description ?? "",
+      });
+      setIsSettingsOpen(false);
+    } catch (saveError) {
+      setFormError(saveError instanceof ApiError ? saveError.message : "保存知识库失败。");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleDeleteKnowledgeBase() {
+    const currentToken = token ?? "";
+    if (!currentToken || !knowledgeBase) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      await kbApi.delete(currentToken, knowledgeBase.id);
+      router.push("/kb");
+    } catch (deleteError) {
+      setFormError(deleteError instanceof ApiError ? deleteError.message : "删除知识库失败。");
+      setIsDeleteConfirmOpen(false);
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -190,7 +263,10 @@ export default function KBDetailPage() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50">
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+              >
                 <Settings className="h-4 w-4" />
                 设置
               </button>
@@ -234,14 +310,14 @@ export default function KBDetailPage() {
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
-            disabled={isUploading}
+            disabled={isUploading || !knowledgeBase}
             className="group flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 bg-white p-10 text-center transition-all hover:border-blue-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
           >
             <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 text-blue-600 transition-transform group-hover:scale-110">
               {isUploading ? <Loader2 className="h-8 w-8 animate-spin" /> : <UploadCloud className="h-8 w-8" />}
             </div>
             <h3 className="mb-1 text-lg font-semibold text-slate-900">
-              {isUploading ? "正在上传与解析文档..." : "点击上传单个文档"}
+              {isUploading ? "正在上传并解析文档..." : "点击上传单个文档"}
             </h3>
             <p className="max-w-md text-sm text-slate-500">
               当前接口支持 TXT、Markdown、PDF。上传后会同步完成解析、切片与向量化。
@@ -286,7 +362,6 @@ export default function KBDetailPage() {
                       <th className="px-6 py-3 font-medium">类型</th>
                       <th className="px-6 py-3 font-medium">创建时间</th>
                       <th className="px-6 py-3 font-medium">备注</th>
-                      <th className="px-6 py-3 text-right font-medium">操作</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -312,19 +387,11 @@ export default function KBDetailPage() {
                             {document.error_message ?? "索引成功"}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-right">
-                          <button
-                            type="button"
-                            className="rounded-md p-1.5 text-slate-400 opacity-0 transition-all hover:bg-slate-200 hover:text-slate-600 group-hover:opacity-100"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                        </td>
                       </tr>
                     ))}
                     {filteredDocuments.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="px-6 py-10 text-center text-sm text-slate-500">
+                        <td colSpan={5} className="px-6 py-10 text-center text-sm text-slate-500">
                           还没有匹配的文档。
                         </td>
                       </tr>
@@ -336,6 +403,142 @@ export default function KBDetailPage() {
           </div>
         </div>
       </div>
+
+      {isSettingsOpen ? (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/30 px-4">
+          <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">知识库设置</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  修改名称与描述，或执行软删除。删除后会隐藏文档和历史问答，但不会物理清理底层数据。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form className="space-y-6" onSubmit={handleSaveSettings}>
+              <div className="space-y-4">
+                <div>
+                  <label htmlFor="kb-name" className="block text-sm font-medium text-slate-700">
+                    名称
+                  </label>
+                  <input
+                    id="kb-name"
+                    value={formState.name}
+                    onChange={(event) =>
+                      setFormState((current) => ({ ...current, name: event.target.value }))
+                    }
+                    required
+                    className="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm shadow-sm transition-colors focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="kb-description" className="block text-sm font-medium text-slate-700">
+                    描述
+                  </label>
+                  <textarea
+                    id="kb-description"
+                    value={formState.description}
+                    onChange={(event) =>
+                      setFormState((current) => ({ ...current, description: event.target.value }))
+                    }
+                    rows={4}
+                    className="mt-1 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm shadow-sm transition-colors focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-rose-700">删除知识库</h3>
+                    <p className="mt-1 text-sm leading-relaxed text-rose-600">
+                      软删除后，这个知识库会从列表、文档管理和问答入口中隐藏，历史会话也不再显示。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteConfirmOpen(true)}
+                    className="flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    删除
+                  </button>
+                </div>
+              </div>
+
+              {formError ? (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {formError}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {isSaving ? "保存中..." : "保存修改"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {isDeleteConfirmOpen && knowledgeBase ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">确认删除知识库</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">
+                删除后将隐藏当前知识库、其关联文档和历史问答入口。底层数据会保留，不会物理清理。
+              </p>
+            </div>
+
+            <div className="mb-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-sm font-medium text-slate-900">{knowledgeBase.name}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {knowledgeBase.description || "暂无描述"}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsDeleteConfirmOpen(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteKnowledgeBase}
+                disabled={isDeleting}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300"
+              >
+                {isDeleting ? "删除中..." : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

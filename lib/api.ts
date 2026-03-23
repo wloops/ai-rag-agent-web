@@ -124,6 +124,11 @@ export const kbApi = {
       token,
     });
   },
+  get(token: string, id: number) {
+    return request<KnowledgeBaseItem>(`/api/kb/${id}`, {
+      token,
+    });
+  },
   create(
     token: string,
     payload: { name: string; description?: string | null },
@@ -132,6 +137,23 @@ export const kbApi = {
       method: "POST",
       token,
       body: payload,
+    });
+  },
+  update(
+    token: string,
+    id: number,
+    payload: { name: string; description?: string | null },
+  ) {
+    return request<KnowledgeBaseItem>(`/api/kb/${id}`, {
+      method: "PATCH",
+      token,
+      body: payload,
+    });
+  },
+  delete(token: string, id: number) {
+    return request<void>(`/api/kb/${id}`, {
+      method: "DELETE",
+      token,
     });
   },
 };
