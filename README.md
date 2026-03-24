@@ -1,20 +1,62 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Frontend
 
-# Run and deploy your AI Studio app
+前端基于 Next.js 15，使用 `pnpm` 管理依赖。
 
-This contains everything you need to run your app locally.
+## 环境变量
 
-View your app in AI Studio: https://ai.studio/apps/1e33823c-8c32-403e-9f5c-780383932a0e
+本地开发时复制模板：
 
-## Run Locally
+```bash
+cp .env.example .env.local
+```
 
-**Prerequisites:**  Node.js
+PowerShell 可用：
 
+```powershell
+Copy-Item .env.example .env.local
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+默认配置：
+
+- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`
+
+## 本地运行
+
+安装依赖：
+
+```bash
+pnpm install
+```
+
+启动开发服务器：
+
+```bash
+pnpm dev
+```
+
+访问地址：
+
+```text
+http://localhost:3000
+```
+
+## Docker 构建与运行
+
+构建镜像：
+
+```bash
+docker build -t ai-rag-agent-frontend --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 .
+```
+
+运行容器：
+
+```bash
+docker run --rm -p 3000:3000 ai-rag-agent-frontend
+```
+
+## 部署说明
+
+- 前端镜像会在构建阶段把 `NEXT_PUBLIC_API_BASE_URL` 固定为 `http://localhost:8000`
+- 如果后端地址不是 `http://localhost:8000`，需要重新构建前端镜像并传入新的 `NEXT_PUBLIC_API_BASE_URL`
+- 数据库和后端的编排放在 [backend/docker-compose.yml](/G:/@restflux.com/workspace/Open/ai-rag-agent/backend/docker-compose.yml)
+- 如果你是分别部署前后端，前端只需要当前目录下的 Dockerfile 和 `.env.example`

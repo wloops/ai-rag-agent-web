@@ -27,14 +27,44 @@ export function buildChatDebugState(params: {
   topK: number;
 }): ChatDebugState {
   const { response, question, knowledgeBase, topK } = params;
+  const fallbackChunks = (response.retrieved_chunks ?? []).map((item) => ({
+    chunkId: item.chunk_id,
+    documentId: item.document_id,
+    filename: item.filename,
+    chunkIndex: item.chunk_index,
+    snippet: item.content,
+    score: item.score,
+    startOffset: null,
+    endOffset: null,
+    whetherCited: false,
+  }));
 
   return {
     conversationId: response.conversation_id,
-    knowledgeBaseId: knowledgeBase?.id ?? 0,
+    knowledgeBaseId: response.debug?.knowledge_base_id ?? knowledgeBase?.id ?? 0,
     knowledgeBaseName: knowledgeBase?.name ?? "未命名知识库",
-    question,
-    topK,
-    retrievedChunks: response.retrieved_chunks ?? [],
+    question: response.debug?.question ?? question,
+    topK: response.debug?.top_k ?? topK,
+    top1Score: response.debug?.top1_score ?? null,
+    threshold: response.debug?.threshold ?? null,
+    decision: response.debug?.decision ?? null,
+    retrievalMs: response.debug?.retrieval_ms ?? null,
+    llmMs: response.debug?.llm_ms ?? null,
+    totalMs: response.debug?.total_ms ?? null,
+    embeddingMs: response.debug?.embedding_ms ?? null,
+    finalContextPreview: response.debug?.final_context_preview ?? null,
+    retrievedChunks:
+      response.debug?.retrieved_chunks.map((item) => ({
+        chunkId: item.chunk_id,
+        documentId: item.document_id,
+        filename: item.filename,
+        chunkIndex: item.chunk_index,
+        snippet: item.snippet,
+        score: item.score,
+        startOffset: item.start_offset,
+        endOffset: item.end_offset,
+        whetherCited: item.whether_cited,
+      })) ?? fallbackChunks,
     savedAt: new Date().toISOString(),
   };
 }
@@ -61,7 +91,7 @@ export function readChatDebugState(conversationId: number): ChatDebugState | nul
   }
 
   try {
-    return JSON.parse(rawValue) as ChatDebugState;
+    return normalizeChatDebugState(JSON.parse(rawValue) as Partial<ChatDebugState>);
   } catch {
     return null;
   }
@@ -80,4 +110,50 @@ export function findConversation(
   conversationId: number,
 ): ConversationItem | null {
   return conversations.find((conversation) => conversation.id === conversationId) ?? null;
+}
+
+function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugState | null {
+  if (!rawState.conversationId) {
+    return null;
+  }
+
+  const normalizedChunks =
+    rawState.retrievedChunks?.map((item) => {
+      const legacyItem = item as typeof item & {
+        chunk_id?: number;
+        document_id?: number;
+        chunk_index?: number;
+        content?: string;
+      };
+
+      return {
+        chunkId: item.chunkId ?? legacyItem.chunk_id ?? 0,
+        documentId: item.documentId ?? legacyItem.document_id ?? 0,
+        filename: item.filename,
+        chunkIndex: item.chunkIndex ?? legacyItem.chunk_index ?? 0,
+        snippet: item.snippet ?? legacyItem.content ?? "",
+        score: item.score,
+        startOffset: item.startOffset ?? null,
+        endOffset: item.endOffset ?? null,
+        whetherCited: item.whetherCited ?? false,
+      };
+    }) ?? [];
+
+  return {
+    conversationId: rawState.conversationId,
+    knowledgeBaseId: rawState.knowledgeBaseId ?? 0,
+    knowledgeBaseName: rawState.knowledgeBaseName ?? "未命名知识库",
+    question: rawState.question ?? "",
+    topK: rawState.topK ?? 0,
+    top1Score: rawState.top1Score ?? null,
+    threshold: rawState.threshold ?? null,
+    decision: rawState.decision ?? null,
+    retrievalMs: rawState.retrievalMs ?? null,
+    llmMs: rawState.llmMs ?? null,
+    totalMs: rawState.totalMs ?? null,
+    embeddingMs: rawState.embeddingMs ?? null,
+    finalContextPreview: rawState.finalContextPreview ?? null,
+    retrievedChunks: normalizedChunks,
+    savedAt: rawState.savedAt ?? new Date().toISOString(),
+  };
 }

@@ -83,6 +83,33 @@ export interface RetrievedChunkDebugItem {
   score: number;
 }
 
+export interface ChatAskDebugRetrievedChunkItem {
+  chunk_id: number;
+  document_id: number;
+  filename: string;
+  chunk_index: number;
+  snippet: string;
+  score: number;
+  start_offset: number | null;
+  end_offset: number | null;
+  whether_cited: boolean;
+}
+
+export interface ChatAskDebugInfo {
+  question: string;
+  knowledge_base_id: number;
+  top_k: number;
+  top1_score: number | null;
+  threshold: number;
+  decision: "answer" | "reject";
+  retrieval_ms: number;
+  llm_ms: number;
+  total_ms: number;
+  embedding_ms: number | null;
+  final_context_preview: string | null;
+  retrieved_chunks: ChatAskDebugRetrievedChunkItem[];
+}
+
 export interface AskChatRequest {
   knowledge_base_id: number;
   question: string;
@@ -96,6 +123,7 @@ export interface AskChatResponse {
   answer: string;
   citations: ChatCitationItem[];
   retrieved_chunks: RetrievedChunkDebugItem[] | null;
+  debug: ChatAskDebugInfo | null;
 }
 
 export interface MessageItem {
@@ -121,6 +149,24 @@ export interface ChatDebugState {
   knowledgeBaseName: string;
   question: string;
   topK: number;
-  retrievedChunks: RetrievedChunkDebugItem[];
+  top1Score: number | null;
+  threshold: number | null;
+  decision: "answer" | "reject" | null;
+  retrievalMs: number | null;
+  llmMs: number | null;
+  totalMs: number | null;
+  embeddingMs: number | null;
+  finalContextPreview: string | null;
+  retrievedChunks: Array<{
+    chunkId: number;
+    documentId: number;
+    filename: string;
+    chunkIndex: number;
+    snippet: string;
+    score: number;
+    startOffset: number | null;
+    endOffset: number | null;
+    whetherCited: boolean;
+  }>;
   savedAt: string;
 }
