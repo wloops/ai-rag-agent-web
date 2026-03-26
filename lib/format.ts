@@ -35,6 +35,9 @@ export function formatDocumentStatus(status: string): string {
     return "已完成";
   }
   if (status === "pending") {
+    return "排队中";
+  }
+  if (status === "processing") {
     return "处理中";
   }
   if (status === "failed") {

@@ -41,12 +41,17 @@ function StatusBadge({ status }: { status: string }) {
       text: formatDocumentStatus(status),
       classes: "border-amber-200 bg-amber-50 text-amber-700",
     },
+    processing: {
+      icon: Loader2,
+      text: formatDocumentStatus(status),
+      classes: "border-blue-200 bg-blue-50 text-blue-700",
+    },
     failed: {
       icon: XCircle,
       text: formatDocumentStatus(status),
       classes: "border-rose-200 bg-rose-50 text-rose-700",
     },
-  }[status as "success" | "pending" | "failed"];
+  }[status as "success" | "pending" | "processing" | "failed"];
 
   if (!config) {
     return null;
@@ -61,7 +66,12 @@ function StatusBadge({ status }: { status: string }) {
         config.classes,
       )}
     >
-      <Icon className={clsx("h-3.5 w-3.5", status === "pending" && "animate-spin")} />
+      <Icon
+        className={clsx(
+          "h-3.5 w-3.5",
+          ["pending", "processing"].includes(status) && "animate-spin",
+        )}
+      />
       {config.text}
     </span>
   );
@@ -135,6 +145,37 @@ export default function KBDetailPage() {
       isMounted = false;
     };
   }, [knowledgeBaseId, token]);
+
+  useEffect(() => {
+    const currentToken = token ?? "";
+    if (!currentToken || Number.isNaN(knowledgeBaseId)) {
+      return;
+    }
+
+    const hasInFlightDocuments = documents.some((document) =>
+      ["pending", "processing"].includes(document.status),
+    );
+    if (!hasInFlightDocuments) {
+      return;
+    }
+
+    const timer = window.setInterval(async () => {
+      try {
+        const [knowledgeBaseItem, documentItems] = await Promise.all([
+          kbApi.get(currentToken, knowledgeBaseId),
+          documentsApi.list(currentToken, knowledgeBaseId),
+        ]);
+        setKnowledgeBase(knowledgeBaseItem);
+        setDocuments(documentItems);
+      } catch {
+        // Ignore polling errors and keep the last successful state.
+      }
+    }, 3000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [documents, knowledgeBaseId, token]);
 
   const filteredDocuments = useMemo(() => {
     const keyword = query.trim().toLowerCase();
