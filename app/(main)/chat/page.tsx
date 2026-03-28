@@ -15,12 +15,9 @@ import {
 import clsx from "clsx";
 
 import { useAuth } from "@/components/auth-provider";
-import { ApiError, chatApi, kbApi } from "@/lib/api";
-import {
-  buildChatDebugState,
-  notifyChatSessionsChanged,
-  saveChatDebugState,
-} from "@/lib/chat";
+import { ApiError, kbApi } from "@/lib/api";
+import { notifyChatSessionsChanged } from "@/lib/chat";
+import { startManagedChatStream } from "@/lib/chat-stream";
 import type { KnowledgeBaseItem } from "@/lib/types";
 
 const DEFAULT_TOP_K = 3;
@@ -63,14 +60,19 @@ export default function ChatEmptyPage() {
         setKnowledgeBases(items);
 
         const queryKnowledgeBaseId = Number(searchParams.get("knowledgeBaseId"));
-        if (!Number.isNaN(queryKnowledgeBaseId) && items.some((item) => item.id === queryKnowledgeBaseId)) {
+        if (
+          !Number.isNaN(queryKnowledgeBaseId) &&
+          items.some((item) => item.id === queryKnowledgeBaseId)
+        ) {
           setSelectedKnowledgeBaseId(queryKnowledgeBaseId);
         } else {
           setSelectedKnowledgeBaseId(items[0]?.id ?? null);
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof ApiError ? loadError.message : "知识库加载失败。");
+          setError(
+            loadError instanceof ApiError ? loadError.message : "知识库加载失败，请稍后重试。",
+          );
         }
       } finally {
         if (isMounted) {
@@ -79,7 +81,7 @@ export default function ChatEmptyPage() {
       }
     }
 
-    loadKnowledgeBases();
+    void loadKnowledgeBases();
 
     return () => {
       isMounted = false;
@@ -92,12 +94,13 @@ export default function ChatEmptyPage() {
     [knowledgeBases, selectedKnowledgeBaseId],
   );
 
-  async function handleSubmit() {
+  function handleSubmit() {
     const currentToken = token ?? "";
+    const question = input.trim();
     if (!currentToken) {
       return;
     }
-    if (!input.trim()) {
+    if (!question) {
       setError("请输入问题内容。");
       return;
     }
@@ -109,28 +112,32 @@ export default function ChatEmptyPage() {
     setError("");
     setIsSubmitting(true);
 
-    try {
-      const response = await chatApi.ask(currentToken, {
+    const handle = startManagedChatStream({
+      token: currentToken,
+      payload: {
         knowledge_base_id: selectedKnowledgeBaseId,
-        question: input.trim(),
+        question,
         top_k: DEFAULT_TOP_K,
         debug: true,
+      },
+      onStart: (conversationId) => {
+        notifyChatSessionsChanged();
+        router.push(`/chat/${conversationId}`);
+      },
+      onError: (message) => {
+        setError(message);
+      },
+    });
+
+    void handle.promise
+      .catch((submitError) => {
+        setError(
+          submitError instanceof ApiError ? submitError.message : "提问失败，请稍后重试。",
+        );
+      })
+      .finally(() => {
+        setIsSubmitting(false);
       });
-      saveChatDebugState(
-        buildChatDebugState({
-          response,
-          question: input.trim(),
-          knowledgeBase: selectedKnowledgeBase,
-          topK: DEFAULT_TOP_K,
-        }),
-      );
-      notifyChatSessionsChanged();
-      router.push(`/chat/${response.conversation_id}`);
-    } catch (submitError) {
-      setError(submitError instanceof ApiError ? submitError.message : "提问失败，请稍后重试。");
-    } finally {
-      setIsSubmitting(false);
-    }
   }
 
   return (

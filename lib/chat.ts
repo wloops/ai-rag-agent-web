@@ -17,6 +17,7 @@ export function mapMessagesToViewModel(messages: MessageItem[]): ChatMessageView
     content: message.content,
     citations: message.citations_json ?? [],
     createdAt: message.created_at,
+    status: "complete",
   }));
 }
 

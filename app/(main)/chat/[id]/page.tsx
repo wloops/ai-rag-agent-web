@@ -33,6 +33,13 @@ import {
   readChatDebugState,
   saveChatDebugState,
 } from "@/lib/chat";
+import {
+  clearManagedChatStream,
+  getManagedChatStreamSnapshot,
+  startManagedChatStream,
+  subscribeManagedChatStream,
+  type ManagedChatStreamSnapshot,
+} from "@/lib/chat-stream";
 import { formatDateTime } from "@/lib/format";
 import type {
   ChatCitationItem,
@@ -64,11 +71,41 @@ function getPreviewSegments(preview: ChunkPreviewResponse | null) {
   return { before: text.slice(0, start), highlight: text.slice(start, end), after: text.slice(end) };
 }
 
+function buildFallbackConversation(
+  conversationId: number,
+  snapshot: ManagedChatStreamSnapshot | null,
+): ConversationItem | null {
+  if (!snapshot || snapshot.conversationId !== conversationId) {
+    return null;
+  }
+
+  return {
+    id: conversationId,
+    knowledge_base_id: snapshot.knowledgeBaseId,
+    title: snapshot.question.slice(0, 30) || "新会话",
+    created_at: snapshot.updatedAt,
+    updated_at: snapshot.updatedAt,
+  };
+}
+
+function buildStreamingAssistantMessage(
+  snapshot: ManagedChatStreamSnapshot,
+): ChatMessageViewModel {
+  return {
+    id: `stream-assistant-${snapshot.conversationId}`,
+    role: "assistant",
+    content: snapshot.answer,
+    citations: snapshot.finalResponse?.citations ?? [],
+    status: snapshot.status,
+  };
+}
+
 export default function ChatSessionPage() {
   const params = useParams();
   const conversationId = Number(params.id);
   const { token } = useAuth();
   const previewRequestIdRef = useRef(0);
+  const handledStreamTerminalRef = useRef<string | null>(null);
 
   const [conversation, setConversation] = useState<ConversationItem | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
@@ -85,6 +122,9 @@ export default function ChatSessionPage() {
   const [isContextExpanded, setIsContextExpanded] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
+  const [activeStream, setActiveStream] = useState<ManagedChatStreamSnapshot | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [showPendingAssistant, setShowPendingAssistant] = useState(false);
 
   useEffect(() => {
     const currentToken = token ?? "";
@@ -95,14 +135,21 @@ export default function ChatSessionPage() {
       setIsLoading(true);
       setError("");
       try {
-        const [conversationItems, knowledgeBaseItems] = await Promise.all([
+        const [conversationItems, knowledgeBaseItems, messageItems] = await Promise.all([
           chatApi.listConversations(currentToken),
           kbApi.list(currentToken),
+          chatApi.listMessages(currentToken, conversationId),
         ]);
-        const currentConversation = findConversation(conversationItems, conversationId);
-        if (!currentConversation) throw new Error("会话不存在或已删除。");
-        const messageItems = await chatApi.listMessages(currentToken, conversationId);
         if (!isMounted) return;
+
+        const fallbackConversation = buildFallbackConversation(
+          conversationId,
+          getManagedChatStreamSnapshot(conversationId),
+        );
+        const currentConversation =
+          findConversation(conversationItems, conversationId) ?? fallbackConversation;
+        if (!currentConversation) throw new Error("会话不存在或已删除。");
+
         setConversation(currentConversation);
         setKnowledgeBases(knowledgeBaseItems);
         setMessages(mapMessagesToViewModel(messageItems));
@@ -117,11 +164,25 @@ export default function ChatSessionPage() {
       }
     }
 
-    loadData();
+    void loadData();
     return () => {
       isMounted = false;
     };
   }, [conversationId, token]);
+
+  useEffect(() => {
+    if (Number.isNaN(conversationId)) {
+      return;
+    }
+
+    handledStreamTerminalRef.current = null;
+    setActiveStream(getManagedChatStreamSnapshot(conversationId));
+    const unsubscribe = subscribeManagedChatStream(conversationId, (snapshot) => {
+      setActiveStream({ ...snapshot });
+    });
+
+    return unsubscribe;
+  }, [conversationId]);
 
   useEffect(() => {
     previewRequestIdRef.current += 1;
@@ -132,7 +193,76 @@ export default function ChatSessionPage() {
     setIsContextExpanded(false);
     setPreviewError("");
     setIsPreviewLoading(false);
+    setPendingQuestion(null);
+    setShowPendingAssistant(false);
   }, [conversationId]);
+
+  useEffect(() => {
+    const currentToken = token ?? "";
+    if (!currentToken || !activeStream || activeStream.conversationId !== conversationId) {
+      return;
+    }
+
+    if (activeStream.status === "error") {
+      setIsSending(false);
+      setShowPendingAssistant(true);
+      if (activeStream.error) {
+        setError(activeStream.error);
+      }
+      return;
+    }
+
+    if (activeStream.status !== "complete" || !activeStream.finalResponse) {
+      return;
+    }
+
+    const terminalKey = `${activeStream.conversationId}:${activeStream.updatedAt}`;
+    if (handledStreamTerminalRef.current === terminalKey) {
+      return;
+    }
+    handledStreamTerminalRef.current = terminalKey;
+
+    saveChatDebugState(
+      buildChatDebugState({
+        response: activeStream.finalResponse,
+        question: activeStream.question,
+        knowledgeBase:
+          knowledgeBases.find((item) => item.id === activeStream.knowledgeBaseId) ?? null,
+        topK: DEFAULT_TOP_K,
+      }),
+    );
+    setDebugState(readChatDebugState(conversationId));
+    setIsContextExpanded(false);
+    setError("");
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const messageItems = await chatApi.listMessages(currentToken, conversationId);
+        if (cancelled) {
+          return;
+        }
+        setMessages(mapMessagesToViewModel(messageItems));
+        setPendingQuestion(null);
+        setShowPendingAssistant(false);
+        setIsSending(false);
+        notifyChatSessionsChanged();
+        clearManagedChatStream(conversationId);
+        setActiveStream(null);
+      } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
+        setError(
+          loadError instanceof ApiError ? loadError.message : "会话消息刷新失败，请稍后重试。",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStream, conversationId, knowledgeBases, token]);
 
   const knowledgeBase = useMemo(
     () => conversation && knowledgeBases.find((item) => item.id === conversation.knowledge_base_id),
@@ -141,38 +271,77 @@ export default function ChatSessionPage() {
   const isDebugOpen = activeRightPanel === "debug";
   const isCitationPreviewOpen = activeRightPanel === "citation";
   const previewSegments = useMemo(() => getPreviewSegments(citationPreview), [citationPreview]);
+  const displayMessages = useMemo(() => {
+    const items = [...messages];
+
+    if (pendingQuestion) {
+      items.push({
+        id: `pending-user-${conversationId}`,
+        role: "user",
+        content: pendingQuestion,
+        citations: [],
+        status: "streaming",
+      });
+    }
+
+    if (activeStream && activeStream.conversationId === conversationId) {
+      items.push(buildStreamingAssistantMessage(activeStream));
+    } else if (showPendingAssistant) {
+      items.push({
+        id: `pending-assistant-${conversationId}`,
+        role: "assistant",
+        content: "",
+        citations: [],
+        status: "streaming",
+      });
+    }
+
+    return items;
+  }, [activeStream, conversationId, messages, pendingQuestion, showPendingAssistant]);
 
   async function refreshMessages(currentToken: string, currentConversationId: number) {
     setMessages(mapMessagesToViewModel(await chatApi.listMessages(currentToken, currentConversationId)));
   }
 
-  async function handleSend() {
+  function handleSend() {
     const currentToken = token ?? "";
+    const question = input.trim();
     if (!currentToken || !conversation) return;
-    if (!input.trim()) return setError("请输入问题内容。");
+    if (!question) {
+      setError("请输入问题内容。");
+      return;
+    }
+
     setError("");
+    setInput("");
+    setPendingQuestion(question);
+    setShowPendingAssistant(true);
     setIsSending(true);
-    try {
-      const response = await chatApi.ask(currentToken, {
+
+    const handle = startManagedChatStream({
+      token: currentToken,
+      payload: {
         knowledge_base_id: conversation.knowledge_base_id,
         conversation_id: conversation.id,
-        question: input.trim(),
+        question,
         top_k: DEFAULT_TOP_K,
         debug: true,
-      });
-      saveChatDebugState(
-        buildChatDebugState({ response, question: input.trim(), knowledgeBase: knowledgeBase ?? null, topK: DEFAULT_TOP_K }),
-      );
-      setDebugState(readChatDebugState(conversation.id));
-      setIsContextExpanded(false);
-      setInput("");
-      await refreshMessages(currentToken, conversation.id);
-      notifyChatSessionsChanged();
-    } catch (sendError) {
-      setError(sendError instanceof ApiError ? sendError.message : "发送失败，请稍后重试。");
-    } finally {
+      },
+      onStart: () => {
+        notifyChatSessionsChanged();
+      },
+      onError: (message) => {
+        setError(message);
+      },
+    });
+
+    void handle.promise.catch((sendError) => {
+      setPendingQuestion(null);
+      setShowPendingAssistant(false);
       setIsSending(false);
-    }
+      setInput(question);
+      setError(sendError instanceof ApiError ? sendError.message : "发送失败，请稍后重试。");
+    });
   }
 
   async function handleOpenChunkPreview(source: PreviewableChunk) {
@@ -191,7 +360,9 @@ export default function ChatSessionPage() {
     } catch (previewLoadError) {
       if (previewRequestIdRef.current === requestId) {
         setPreviewError(
-          previewLoadError instanceof ApiError ? previewLoadError.message : "原文预览加载失败，请稍后重试。",
+          previewLoadError instanceof ApiError
+            ? previewLoadError.message
+            : "原文预览加载失败，请稍后重试。",
         );
       }
     } finally {
@@ -323,16 +494,21 @@ export default function ChatSessionPage() {
 
         <div className="flex-1 space-y-8 overflow-y-auto p-6">
           {error ? <div className="mx-auto max-w-4xl rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
-          {isLoading ? <EmptyState text="正在加载会话内容..." /> : messages.length === 0 ? <EmptyState text="该会话还没有消息。" /> : messages.map((message) => {
+          {isLoading ? <EmptyState text="正在加载会话内容..." /> : displayMessages.length === 0 ? <EmptyState text="该会话还没有消息。" /> : displayMessages.map((message) => {
             const isUser = message.role === "user";
             const isCitationGroupExpanded = Boolean(expandedCitationGroups[message.id]);
+            const assistantContent =
+              message.content || (message.status === "error" ? "回答中断，请重试。" : "正在生成...");
             return (
               <div key={message.id} className={clsx("mx-auto flex max-w-4xl gap-4", isUser && "flex-row-reverse")}>
                 <div className={clsx("mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border shadow-sm", isUser ? "border-slate-200 bg-slate-100" : "border-blue-700 bg-blue-600 text-white")}>{isUser ? <User className="h-4 w-4 text-slate-600" /> : <Bot className="h-4 w-4" />}</div>
                 <div className={clsx("flex max-w-[85%] flex-col gap-2", isUser ? "items-end" : "items-start")}>
                   {isUser ? <div className="rounded-2xl rounded-tr-sm bg-slate-900 px-5 py-3.5 text-sm leading-relaxed text-white shadow-sm whitespace-pre-wrap">{message.content}</div> : (
                     <div className="w-full overflow-hidden rounded-2xl rounded-tl-sm border border-slate-200 bg-white shadow-sm">
-                      <div className="p-5 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">{message.content}</div>
+                      <div className="p-5 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                        {assistantContent}
+                        {message.status === "streaming" ? <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-blue-500/70 align-middle" /> : null}
+                      </div>
                       {message.citations.length > 0 ? (
                         <div className="border-t border-slate-100 bg-slate-50/50 px-5 pb-5 pt-2">
                           <button onClick={() => setExpandedCitationGroups((current) => ({ ...current, [message.id]: !current[message.id] }))} className="mb-3 mt-2 flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-200 hover:bg-blue-50/60">
@@ -350,7 +526,17 @@ export default function ChatSessionPage() {
                           })}</div> : null}
                         </div>
                       ) : null}
-                      <div className="flex items-center justify-end border-t border-slate-100 bg-slate-50 px-4 py-2 text-[10px] font-medium text-slate-400">{message.createdAt ? formatDateTime(message.createdAt) : "AI 响应"}</div>
+                      <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50 px-4 py-2 text-[10px] font-medium text-slate-400">
+                        <span>
+                          {message.status === "streaming"
+                            ? "生成中"
+                            : message.status === "error"
+                              ? "生成中断"
+                              : message.createdAt
+                                ? formatDateTime(message.createdAt)
+                                : "AI 响应"}
+                        </span>
+                      </div>
                     </div>
                   )}
                 </div>

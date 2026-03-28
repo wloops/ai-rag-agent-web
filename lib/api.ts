@@ -1,6 +1,9 @@
 import type {
   AskChatRequest,
   AskChatResponse,
+  ChatStreamDeltaPayload,
+  ChatStreamErrorPayload,
+  ChatStreamStartPayload,
   ChunkPreviewResponse,
   ConversationItem,
   DocumentItem,
@@ -30,6 +33,13 @@ interface RequestOptions {
 interface ErrorPayload {
   detail?: string;
   message?: string;
+}
+
+interface ChatStreamHandlers {
+  onStart?: (payload: ChatStreamStartPayload) => void;
+  onDelta?: (payload: ChatStreamDeltaPayload) => void;
+  onFinal?: (payload: AskChatResponse) => void;
+  onError?: (payload: ChatStreamErrorPayload) => void;
 }
 
 export class ApiError extends Error {
@@ -97,6 +107,88 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   return (await response.json()) as T;
+}
+
+async function consumeEventStream(
+  response: Response,
+  handlers: ChatStreamHandlers,
+): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Streaming response body is unavailable");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    buffer = buffer.replace(/\r\n/g, "\n");
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    while (separatorIndex >= 0) {
+      const rawEvent = buffer.slice(0, separatorIndex).trim();
+      buffer = buffer.slice(separatorIndex + 2);
+      if (rawEvent) {
+        handleEventStreamChunk(rawEvent, handlers);
+      }
+      separatorIndex = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      const trailingEvent = buffer.trim();
+      if (trailingEvent) {
+        handleEventStreamChunk(trailingEvent, handlers);
+      }
+      break;
+    }
+  }
+}
+
+function handleEventStreamChunk(rawEvent: string, handlers: ChatStreamHandlers): void {
+  let eventName = "message";
+  const dataLines: string[] = [];
+
+  for (const line of rawEvent.split("\n")) {
+    if (line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  const payload = JSON.parse(dataLines.join("\n")) as
+    | ChatStreamStartPayload
+    | ChatStreamDeltaPayload
+    | ChatStreamErrorPayload
+    | AskChatResponse;
+
+  switch (eventName) {
+    case "start":
+      handlers.onStart?.(payload as ChatStreamStartPayload);
+      break;
+    case "delta":
+      handlers.onDelta?.(payload as ChatStreamDeltaPayload);
+      break;
+    case "final":
+      handlers.onFinal?.(payload as AskChatResponse);
+      break;
+    case "error":
+      handlers.onError?.(payload as ChatStreamErrorPayload);
+      break;
+    default:
+      break;
+  }
 }
 
 export const authApi = {
@@ -209,5 +301,30 @@ export const chatApi = {
       token,
       body: payload,
     });
+  },
+  async askStream(
+    token: string,
+    payload: AskChatRequest,
+    handlers: ChatStreamHandlers,
+  ) {
+    const response = await fetch(`${API_BASE_URL}/api/chat/ask/stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        emitUnauthorized();
+      }
+      throw new ApiError(response.status, await parseErrorPayload(response));
+    }
+
+    await consumeEventStream(response, handlers);
   },
 };

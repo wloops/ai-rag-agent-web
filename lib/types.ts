@@ -126,6 +126,18 @@ export interface AskChatResponse {
   debug: ChatAskDebugInfo | null;
 }
 
+export interface ChatStreamStartPayload {
+  conversation_id: number;
+}
+
+export interface ChatStreamDeltaPayload {
+  content: string;
+}
+
+export interface ChatStreamErrorPayload {
+  detail: string;
+}
+
 export interface MessageItem {
   id: number;
   conversation_id: number;
@@ -141,6 +153,7 @@ export interface ChatMessageViewModel {
   content: string;
   citations: ChatCitationItem[];
   createdAt?: string;
+  status?: "streaming" | "error" | "complete";
 }
 
 export interface ChatDebugState {
