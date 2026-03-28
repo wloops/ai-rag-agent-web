@@ -58,6 +58,15 @@ pnpm start
 
 ## Docker
 
+如果要启动完整项目，优先使用项目根目录的统一编排：
+
+```bash
+cd ..
+docker compose up -d --build
+```
+
+单独构建前端镜像时：
+
 构建镜像：
 
 ```bash
@@ -69,6 +78,8 @@ docker build -t ai-rag-agent-frontend --build-arg NEXT_PUBLIC_API_BASE_URL=http:
 ```bash
 docker run --rm -p 3000:3000 ai-rag-agent-frontend
 ```
+
+注意：`NEXT_PUBLIC_API_BASE_URL` 会写入前端构建产物。修改这个变量后，需要重新构建前端镜像。
 
 ## 当前前端页面
 
