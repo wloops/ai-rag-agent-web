@@ -89,7 +89,11 @@ function AssistantMarkdown({ content, isStreaming }: { content: string; isStream
           },
           pre: ({ children }) => <pre className="overflow-x-auto rounded-xl bg-slate-950">{children}</pre>,
           hr: () => <hr className="border-slate-200" />,
-          table: ({ children }) => <div className="overflow-x-auto"><table className="min-w-full border-collapse text-left text-xs">{children}</table></div>,
+          table: ({ children }) => (
+            <div className="overflow-x-auto">
+              <table className="min-w-full border-collapse text-left text-xs">{children}</table>
+            </div>
+          ),
           thead: ({ children }) => <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">{children}</thead>,
           th: ({ children }) => <th className="px-3 py-2 font-semibold">{children}</th>,
           td: ({ children }) => <td className="border-b border-slate-100 px-3 py-2 align-top text-slate-600">{children}</td>,
