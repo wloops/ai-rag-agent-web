@@ -1,4 +1,6 @@
 import type {
+  AgentRunRequest,
+  AgentRunResponse,
   AskChatRequest,
   AskChatResponse,
   ChatStreamDeltaPayload,
@@ -279,6 +281,12 @@ export const documentsApi = {
       },
     );
   },
+  retry(token: string, documentId: number) {
+    return request<DocumentItem>(`/api/documents/${documentId}/retry`, {
+      method: "POST",
+      token,
+    });
+  },
 };
 
 export const chatApi = {
@@ -326,5 +334,15 @@ export const chatApi = {
     }
 
     await consumeEventStream(response, handlers);
+  },
+};
+
+export const agentApi = {
+  run(token: string, payload: AgentRunRequest) {
+    return request<AgentRunResponse>("/api/agent/run", {
+      method: "POST",
+      token,
+      body: payload,
+    });
   },
 };

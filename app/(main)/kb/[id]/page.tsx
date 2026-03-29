@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   CheckCircle2,
+  RefreshCcw,
   File,
   FileText,
   Filter,
@@ -100,6 +101,7 @@ export default function KBDetailPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [retryingDocumentId, setRetryingDocumentId] = useState<number | null>(null);
 
   useEffect(() => {
     const currentToken = token ?? "";
@@ -159,6 +161,8 @@ export default function KBDetailPage() {
       return;
     }
 
+    // 只在存在进行中文档时轮询，避免详情页常驻请求；
+    // 这里的轮询职责仅限于同步异步建库状态，不承担其它数据刷新。
     const timer = window.setInterval(async () => {
       try {
         const [knowledgeBaseItem, documentItems] = await Promise.all([
@@ -196,6 +200,28 @@ export default function KBDetailPage() {
   async function refreshDocuments(currentToken: string) {
     const updatedDocuments = await documentsApi.list(currentToken, knowledgeBaseId);
     setDocuments(updatedDocuments);
+  }
+
+  async function handleRetryDocument(documentId: number) {
+    const currentToken = token ?? "";
+    if (!currentToken) {
+      return;
+    }
+
+    setRetryingDocumentId(documentId);
+    setUploadError("");
+    try {
+      // 重试入口只负责重新入队失败文档，真正的解析/建库仍由后端异步链路处理，
+      // 这样前端行为和首次上传保持一致，避免出现两套处理模型。
+      await documentsApi.retry(currentToken, documentId);
+      await refreshDocuments(currentToken);
+    } catch (retryError) {
+      setUploadError(
+        retryError instanceof ApiError ? retryError.message : "重试失败，请稍后重试。",
+      );
+    } finally {
+      setRetryingDocumentId(null);
+    }
   }
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -317,6 +343,12 @@ export default function KBDetailPage() {
               >
                 开始问答
               </Link>
+              <Link
+                href={`/agent?knowledgeBaseId=${knowledgeBaseId}`}
+                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+              >
+                Agent 工具
+              </Link>
             </div>
           </div>
         </div>
@@ -358,10 +390,10 @@ export default function KBDetailPage() {
               {isUploading ? <Loader2 className="h-8 w-8 animate-spin" /> : <UploadCloud className="h-8 w-8" />}
             </div>
             <h3 className="mb-1 text-lg font-semibold text-slate-900">
-              {isUploading ? "正在上传并解析文档..." : "点击上传单个文档"}
+              {isUploading ? "正在上传并提交异步建库..." : "点击上传单个文档"}
             </h3>
             <p className="max-w-md text-sm text-slate-500">
-              当前接口支持 TXT、Markdown、PDF。上传后会同步完成解析、切片与向量化。
+              当前接口支持 TXT、Markdown、PDF。上传后会立即返回，后端会异步完成解析、切片与向量化。
             </p>
           </button>
 
@@ -403,6 +435,7 @@ export default function KBDetailPage() {
                       <th className="px-6 py-3 font-medium">类型</th>
                       <th className="px-6 py-3 font-medium">创建时间</th>
                       <th className="px-6 py-3 font-medium">备注</th>
+                      <th className="px-6 py-3 font-medium">操作</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -428,11 +461,30 @@ export default function KBDetailPage() {
                             {document.error_message ?? "索引成功"}
                           </span>
                         </td>
+                        <td className="px-6 py-4">
+                          {document.status === "failed" ? (
+                            <button
+                              type="button"
+                              onClick={() => handleRetryDocument(document.id)}
+                              disabled={retryingDocumentId === document.id}
+                              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                              {retryingDocumentId === document.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCcw className="h-3.5 w-3.5" />
+                              )}
+                              重试
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-300">-</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                     {filteredDocuments.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-6 py-10 text-center text-sm text-slate-500">
+                        <td colSpan={6} className="px-6 py-10 text-center text-sm text-slate-500">
                           还没有匹配的文档。
                         </td>
                       </tr>

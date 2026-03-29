@@ -44,6 +44,12 @@ export interface DocumentItem {
   created_at: string;
 }
 
+export type AgentTaskType =
+  | "knowledge_base_qa"
+  | "knowledge_base_summary"
+  | "latest_documents_digest"
+  | "interview_material";
+
 export interface ConversationItem {
   id: number;
   knowledge_base_id: number;
@@ -124,6 +130,27 @@ export interface AskChatResponse {
   citations: ChatCitationItem[];
   retrieved_chunks: RetrievedChunkDebugItem[] | null;
   debug: ChatAskDebugInfo | null;
+}
+
+export interface AgentWorkflowTraceItem {
+  step: string;
+  status: "completed" | "skipped";
+  detail: string;
+}
+
+export interface AgentRunRequest {
+  knowledge_base_id: number;
+  task_type: AgentTaskType;
+  query?: string | null;
+  top_k?: number;
+}
+
+export interface AgentRunResponse {
+  knowledge_base_id: number;
+  task_type: AgentTaskType;
+  answer: string;
+  citations: ChatCitationItem[];
+  workflow_trace: AgentWorkflowTraceItem[];
 }
 
 export interface ChatStreamStartPayload {

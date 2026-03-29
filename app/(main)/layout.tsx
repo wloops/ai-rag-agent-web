@@ -7,6 +7,7 @@ import {
   BrainCircuit,
   LayoutDashboard,
   Library,
+  Sparkles,
   MessageCircle,
   MessageSquare,
   Plus,
@@ -77,6 +78,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
   const navItems = [
     { name: "工作台", href: "/dashboard", icon: LayoutDashboard },
     { name: "知识库", href: "/kb", icon: Library },
+    { name: "Agent", href: "/agent", icon: Sparkles },
     { name: "智能问答", href: "/chat", icon: MessageSquare },
     { name: "设置", href: "/settings", icon: Settings },
   ];

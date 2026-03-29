@@ -1,6 +1,6 @@
 # Frontend 运行手册
 
-前端基于 `Next.js 15 + TypeScript`，负责登录、知识库管理、文档上传、聊天问答、引用查看和调试面板展示。
+前端基于 `Next.js 15 + TypeScript`，负责登录、知识库管理、文档上传、聊天问答、Agent 工具入口、引用查看和调试面板展示。
 
 ## 环境变量
 
@@ -86,6 +86,7 @@ docker run --rm -p 3000:3000 ai-rag-agent-frontend
 - `/login`: 登录页
 - `/kb`: 知识库列表
 - `/kb/[id]`: 知识库详情、文档上传、状态查看
+- `/agent`: Agent 工作台
 - `/chat`: 聊天入口页
 - `/chat/[id]`: 会话详情、引用面板、RAG 调试视图
 - `/dashboard`: 概览页
@@ -98,6 +99,7 @@ docker run --rm -p 3000:3000 ai-rag-agent-frontend
 - 上传后立即返回，不等待后端同步建库
 - 页面自动轮询 `pending` / `processing` 文档状态
 - 失败时显示 `error_message`
+- `failed` 文档支持直接重试
 
 这和后端异步链路是一一对应的：前端只负责展示与轮询，不自己推断处理结果。
 
@@ -109,6 +111,13 @@ docker run --rm -p 3000:3000 ai-rag-agent-frontend
 - 展示引用来源
 - 查看 chunk 原文预览
 - 查看调试数据：阈值、top-k、最终上下文、耗时、召回结果
+
+Agent 页当前支持：
+
+- 选择知识库
+- 选择任务类型
+- 执行知识库问答、知识库总结、最新文档汇总、面试材料生成
+- 查看执行轨迹与引用片段
 
 ## 与后端联调前提
 
