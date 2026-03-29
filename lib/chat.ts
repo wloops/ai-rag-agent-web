@@ -60,6 +60,14 @@ export function buildChatDebugState(params: {
         status: item.status,
         durationMs: item.duration_ms,
         detail: item.detail,
+        usedHistory: item.used_history,
+        rewrittenQuestion: item.rewritten_question,
+        retrievalCount: item.retrieval_count,
+        top1Score: item.top1_score,
+        threshold: item.threshold,
+        decision: item.decision,
+        citedCount: item.cited_count,
+        usedFallbackCitations: item.used_fallback_citations,
       })) ?? [],
     retrievedChunks:
       response.debug?.retrieved_chunks.map((item) => ({
@@ -155,6 +163,14 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
         status?: "completed" | "skipped";
         duration_ms?: number;
         detail?: string;
+        used_history?: boolean;
+        rewritten_question?: string;
+        retrieval_count?: number;
+        top1_score?: number;
+        threshold?: number;
+        decision?: "answer" | "reject";
+        cited_count?: number;
+        used_fallback_citations?: boolean;
       }>;
     }).graph_trace ?? []);
 
@@ -165,6 +181,20 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
       durationMs?: number;
       duration_ms?: number;
       detail?: string;
+      usedHistory?: boolean;
+      used_history?: boolean;
+      rewrittenQuestion?: string;
+      rewritten_question?: string;
+      retrievalCount?: number;
+      retrieval_count?: number;
+      top1Score?: number;
+      top1_score?: number;
+      threshold?: number;
+      decision?: "answer" | "reject";
+      citedCount?: number;
+      cited_count?: number;
+      usedFallbackCitations?: boolean;
+      used_fallback_citations?: boolean;
     };
 
     return {
@@ -172,6 +202,15 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
       status: traceItem.status ?? "completed",
       durationMs: traceItem.durationMs ?? traceItem.duration_ms ?? 0,
       detail: traceItem.detail ?? "",
+      usedHistory: traceItem.usedHistory ?? traceItem.used_history ?? null,
+      rewrittenQuestion: traceItem.rewrittenQuestion ?? traceItem.rewritten_question ?? null,
+      retrievalCount: traceItem.retrievalCount ?? traceItem.retrieval_count ?? null,
+      top1Score: traceItem.top1Score ?? traceItem.top1_score ?? null,
+      threshold: traceItem.threshold ?? null,
+      decision: traceItem.decision ?? null,
+      citedCount: traceItem.citedCount ?? traceItem.cited_count ?? null,
+      usedFallbackCitations:
+        traceItem.usedFallbackCitations ?? traceItem.used_fallback_citations ?? null,
     };
   });
 

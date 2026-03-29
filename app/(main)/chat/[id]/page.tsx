@@ -19,9 +19,198 @@ const AUTO_SCROLL_THRESHOLD = 96
 
 type RightPanelType = 'debug' | 'citation'
 type PreviewableChunk = Pick<ChatCitationItem, 'chunk_id' | 'document_id' | 'filename' | 'chunk_index' | 'start_offset' | 'end_offset'> & { snippet: string | null }
+type GraphTraceItem = ChatDebugState['graphTrace'][number]
+type TraceChunkFocusMode = 'none' | 'all' | 'cited' | 'top1'
+type DebugEvidenceMode = 'rewrite' | 'retrieval' | 'guard' | 'answer' | 'citations' | 'system'
 
 const formatScore = (value: number | null) => (value === null || Number.isNaN(value) ? '--' : value.toFixed(3))
 const formatDuration = (value: number | null) => (value === null || Number.isNaN(value) ? '--' : `${value} ms`)
+const GRAPH_NODE_LABELS: Record<string, string> = {
+  validate_request: '校验请求',
+  resolve_conversation: '解析会话',
+  rewrite_question: '问题改写',
+  retrieve_context: '检索上下文',
+  relevance_guard: '相关度守卫',
+  generate_answer: '生成回答',
+  stream_answer: '流式生成回答',
+  build_citations: '构建引用',
+  finalize_response: '组装并保存结果',
+}
+
+function getGraphNodeLabel(node: string) {
+  return GRAPH_NODE_LABELS[node] ?? node
+}
+
+function getGraphStatusLabel(status: GraphTraceItem['status']) {
+  return status === 'completed' ? '已完成' : '已跳过'
+}
+
+function getGraphDecisionLabel(decision: GraphTraceItem['decision'] | ChatDebugState['decision']) {
+  if (decision === 'answer') return '允许回答'
+  if (decision === 'reject') return '触发拒答'
+  return '--'
+}
+
+function getGraphNodeDescription(item: GraphTraceItem) {
+  if (item.node === 'validate_request') {
+    return '已校验问题内容，并确认当前知识库可访问。'
+  }
+  if (item.node === 'resolve_conversation') {
+    return '已定位当前会话，并载入最近几轮对话作为上下文。'
+  }
+  if (item.node === 'rewrite_question') {
+    return item.usedHistory ? '结合最近对话，将追问改写为独立问题。' : '没有可用历史，本次直接使用原问题。'
+  }
+  if (item.node === 'retrieve_context') {
+    if (item.retrievalCount === null) return '尚未得到检索结果。'
+    if (item.retrievalCount === 0) return '没有召回到可用片段。'
+    return `从知识库召回 ${item.retrievalCount} 个片段，最高相似度 ${formatScore(item.top1Score)}。`
+  }
+  if (item.node === 'relevance_guard') {
+    if (item.decision === 'answer') {
+      return `最高相似度 ${formatScore(item.top1Score)} 高于阈值 ${formatScore(item.threshold)}，允许继续回答。`
+    }
+    if (item.top1Score === null) {
+      return '没有可用召回结果，直接触发拒答。'
+    }
+    return `最高相似度 ${formatScore(item.top1Score)} 低于阈值 ${formatScore(item.threshold)}，触发拒答。`
+  }
+  if (item.node === 'generate_answer' || item.node === 'stream_answer') {
+    return '基于通过筛选的召回片段生成最终回答。'
+  }
+  if (item.node === 'build_citations') {
+    if (item.citedCount === null) return '正在整理回答引用。'
+    if (item.citedCount === 0) return '本次回答没有生成可展示的引用。'
+    return `已整理 ${item.citedCount} 条引用，并标记最终使用的片段。`
+  }
+  if (item.node === 'finalize_response') {
+    return '已保存助手消息、引用信息和调试轨迹。'
+  }
+  return item.detail
+}
+
+function getDebugEvidenceMode(node: string | null): DebugEvidenceMode {
+  if (node === 'rewrite_question') return 'rewrite'
+  if (node === 'retrieve_context') return 'retrieval'
+  if (node === 'relevance_guard') return 'guard'
+  if (node === 'generate_answer' || node === 'stream_answer') return 'answer'
+  if (node === 'build_citations') return 'citations'
+  return 'system'
+}
+
+function getDebugEvidenceTitle(mode: DebugEvidenceMode) {
+  if (mode === 'rewrite') return '问题改写依据'
+  if (mode === 'retrieval') return '检索证据'
+  if (mode === 'guard') return '阈值判断依据'
+  if (mode === 'answer') return '回答生成结果'
+  if (mode === 'citations') return '最终引用证据'
+  return '系统处理结果'
+}
+
+function resolvePreferredTraceNode(
+  graphTrace: GraphTraceItem[],
+  preferredNode?: string | null,
+) {
+  const preferredOrder = [
+    preferredNode,
+    'relevance_guard',
+    'retrieve_context',
+    'build_citations',
+    'stream_answer',
+    'generate_answer',
+    'rewrite_question',
+  ].filter(Boolean)
+
+  for (const node of preferredOrder) {
+    if (graphTrace.some((item) => item.node === node)) {
+      return node ?? null
+    }
+  }
+
+  return graphTrace[0]?.node ?? null
+}
+
+function buildTraceSummaryRows(item: GraphTraceItem) {
+  const rows: Array<{ label: string; value: string; tone?: 'slate' | 'blue' | 'emerald' | 'amber' }> = []
+
+  if (item.node === 'rewrite_question') {
+    rows.push({
+      label: '历史消息',
+      value: item.usedHistory ? '使用最近消息改写' : '未使用历史，直接复用问题',
+      tone: item.usedHistory ? 'blue' : 'slate',
+    })
+    if (item.rewrittenQuestion) {
+      rows.push({
+        label: '独立问题',
+        value: item.rewrittenQuestion,
+      })
+    }
+  }
+
+  if (item.node === 'retrieve_context') {
+    if (item.retrievalCount !== null) {
+      rows.push({ label: '召回数量', value: String(item.retrievalCount), tone: 'blue' })
+    }
+    if (item.top1Score !== null) {
+      rows.push({ label: '最高相似度', value: formatScore(item.top1Score), tone: 'emerald' })
+    }
+  }
+
+  if (item.node === 'relevance_guard') {
+    if (item.top1Score !== null) {
+      rows.push({ label: '最高相似度', value: formatScore(item.top1Score), tone: 'emerald' })
+    }
+    if (item.threshold !== null) {
+      rows.push({ label: '拒答阈值', value: formatScore(item.threshold), tone: 'amber' })
+    }
+    if (item.decision) {
+      rows.push({
+        label: '判定',
+        value: getGraphDecisionLabel(item.decision),
+        tone: item.decision === 'answer' ? 'emerald' : 'amber',
+      })
+    }
+  }
+
+  if (item.node === 'build_citations') {
+    if (item.citedCount !== null) {
+      rows.push({ label: '引用数量', value: String(item.citedCount), tone: 'blue' })
+    }
+    if (item.usedFallbackCitations !== null) {
+      rows.push({
+        label: '引用来源',
+        value: item.usedFallbackCitations ? '自动兜底引用' : '模型显式引用',
+        tone: item.usedFallbackCitations ? 'amber' : 'emerald',
+      })
+    }
+  }
+
+  return rows
+}
+
+function getTraceChunkFocusMode(node: string | null): TraceChunkFocusMode {
+  // 这里固定节点到片段区域的映射，避免调试口径随 UI 改动漂移。
+  if (node === 'retrieve_context') return 'all'
+  if (node === 'build_citations') return 'cited'
+  if (node === 'relevance_guard') return 'top1'
+  return 'none'
+}
+
+function getTraceChunkHint(item: GraphTraceItem | null) {
+  if (!item) return null
+  if (item.node === 'retrieve_context') return '当前正在查看检索结果，下面会高亮全部召回片段，便于解释排序依据。'
+  if (item.node === 'build_citations') return '当前正在查看最终引用，下面会高亮被答案实际引用的片段。'
+  if (item.node === 'relevance_guard') return '当前正在查看阈值判断，下面会突出最高分片段，并对比最高相似度与拒答阈值。'
+  if (item.node === 'rewrite_question') return '当前正在查看问题改写结果。这个节点主要解释追问是否被改写，不直接绑定具体片段。'
+  return '当前节点主要展示执行过程说明，没有额外的片段联动规则。'
+}
+
+function getTraceSummaryToneClass(tone: 'slate' | 'blue' | 'emerald' | 'amber' = 'slate') {
+  if (tone === 'blue') return 'border-blue-200 bg-blue-50 text-blue-700'
+  if (tone === 'emerald') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  if (tone === 'amber') return 'border-amber-200 bg-amber-50 text-amber-700'
+  return 'border-slate-200 bg-slate-50 text-slate-600'
+}
 
 function getDistanceFromBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight
@@ -124,6 +313,7 @@ export default function ChatSessionPage() {
   const [isSending, setIsSending] = useState(false)
   const [activeRightPanel, setActiveRightPanel] = useState<RightPanelType | null>(null)
   const [debugState, setDebugState] = useState<ChatDebugState | null>(null)
+  const [selectedTraceNode, setSelectedTraceNode] = useState<string | null>(null)
   const [selectedPreviewSource, setSelectedPreviewSource] = useState<PreviewableChunk | null>(null)
   const [citationPreview, setCitationPreview] = useState<ChunkPreviewResponse | null>(null)
   const [expandedCitationGroups, setExpandedCitationGroups] = useState<Record<string, boolean>>({})
@@ -134,6 +324,7 @@ export default function ChatSessionPage() {
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
   const [showPendingAssistant, setShowPendingAssistant] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [isGuardChunksExpanded, setIsGuardChunksExpanded] = useState(false)
 
   useEffect(() => {
     const currentToken = token ?? ''
@@ -192,10 +383,12 @@ export default function ChatSessionPage() {
   useEffect(() => {
     previewRequestIdRef.current += 1
     setActiveRightPanel(null)
+    setSelectedTraceNode(null)
     setSelectedPreviewSource(null)
     setCitationPreview(null)
     setExpandedCitationGroups({})
     setIsContextExpanded(false)
+    setIsGuardChunksExpanded(false)
     setPreviewError('')
     setIsPreviewLoading(false)
     setPendingQuestion(null)
@@ -302,6 +495,9 @@ export default function ChatSessionPage() {
   const isDebugOpen = activeRightPanel === 'debug'
   const isCitationPreviewOpen = activeRightPanel === 'citation'
   const previewSegments = useMemo(() => getPreviewSegments(citationPreview), [citationPreview])
+  const selectedTraceItem = useMemo(() => debugState?.graphTrace.find((item) => item.node === selectedTraceNode) ?? null, [debugState, selectedTraceNode])
+  const traceChunkFocusMode = useMemo(() => getTraceChunkFocusMode(selectedTraceNode), [selectedTraceNode])
+  const evidenceMode = useMemo<DebugEvidenceMode>(() => getDebugEvidenceMode(selectedTraceNode), [selectedTraceNode])
   const displayMessages = useMemo(() => {
     const items = [...messages]
 
@@ -331,6 +527,31 @@ export default function ChatSessionPage() {
   }, [activeStream, conversationId, messages, pendingQuestion, showPendingAssistant])
   const displayMessageCount = displayMessages.length
   const streamingAnswerLength = activeStream?.answer.length ?? 0
+  const latestAssistantMessage = useMemo(() => [...displayMessages].reverse().find((item) => item.role === 'assistant') ?? null, [displayMessages])
+  const citedRetrievedChunks = useMemo(() => debugState?.retrievedChunks.filter((item) => item.whetherCited) ?? [], [debugState])
+  const topRetrievedChunk = debugState?.retrievedChunks[0] ?? null
+
+  useEffect(() => {
+    if (!selectedTraceNode || !debugState) {
+      return
+    }
+    if (!debugState.graphTrace.some((item) => item.node === selectedTraceNode)) {
+      setSelectedTraceNode(resolvePreferredTraceNode(debugState.graphTrace))
+    }
+  }, [debugState, selectedTraceNode])
+
+  useEffect(() => {
+    if (activeRightPanel !== 'debug' || !debugState || selectedTraceNode) {
+      return
+    }
+    setSelectedTraceNode(resolvePreferredTraceNode(debugState.graphTrace))
+  }, [activeRightPanel, debugState, selectedTraceNode])
+
+  useEffect(() => {
+    if (selectedTraceNode !== 'relevance_guard') {
+      setIsGuardChunksExpanded(false)
+    }
+  }, [selectedTraceNode])
 
   useEffect(() => {
     if (!shouldStickToBottomRef.current) {
@@ -348,6 +569,15 @@ export default function ChatSessionPage() {
 
   async function refreshMessages(currentToken: string, currentConversationId: number) {
     setMessages(mapMessagesToViewModel(await chatApi.listMessages(currentToken, currentConversationId)))
+  }
+
+  function openDebugWorkspace(preferredNode?: string | null) {
+    setActiveRightPanel('debug')
+    if (!debugState) {
+      setSelectedTraceNode(null)
+      return
+    }
+    setSelectedTraceNode(resolvePreferredTraceNode(debugState.graphTrace, preferredNode))
   }
 
   function scrollMessagesToBottom(behavior: ScrollBehavior = 'auto') {
@@ -407,7 +637,10 @@ export default function ChatSessionPage() {
     })
   }
 
-  async function handleOpenChunkPreview(source: PreviewableChunk) {
+  async function handleOpenChunkPreview(
+    source: PreviewableChunk,
+    options?: { preserveDebugWorkspace?: boolean; focusNode?: string | null },
+  ) {
     const currentToken = token ?? ''
     if (!currentToken || !source.chunk_id) return
     const requestId = previewRequestIdRef.current + 1
@@ -416,7 +649,11 @@ export default function ChatSessionPage() {
     setCitationPreview(null)
     setPreviewError('')
     setIsPreviewLoading(true)
-    setActiveRightPanel('citation')
+    if (options?.preserveDebugWorkspace) {
+      openDebugWorkspace(options.focusNode ?? selectedTraceNode)
+    } else {
+      setActiveRightPanel('citation')
+    }
     try {
       const preview = await documentsApi.getChunkPreview(currentToken, source.document_id, source.chunk_id)
       if (previewRequestIdRef.current === requestId) setCitationPreview(preview)
@@ -484,8 +721,16 @@ export default function ChatSessionPage() {
             <div className="grid grid-cols-2 gap-2 text-xs">
               <Metric label="知识库" value={debugState.knowledgeBaseName} truncate />
               <Metric label="Top K" value={String(debugState.topK)} />
-              <Metric label="Top1 Score" value={formatScore(debugState.top1Score)} />
-              <Metric label="Threshold" value={formatScore(debugState.threshold)} />
+              <Metric
+                label="最高相似度"
+                value={formatScore(debugState.top1Score)}
+                className={clsx(selectedTraceNode === 'relevance_guard' && 'rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5')}
+              />
+              <Metric
+                label="拒答阈值"
+                value={formatScore(debugState.threshold)}
+                className={clsx(selectedTraceNode === 'relevance_guard' && 'rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5')}
+              />
             </div>
             <span
               className={clsx(
@@ -494,7 +739,7 @@ export default function ChatSessionPage() {
               )}
             >
               {debugState.decision === 'reject' ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-              {debugState.decision ?? '--'}
+              {getGraphDecisionLabel(debugState.decision)}
             </span>
           </div>
         </div>
@@ -505,10 +750,10 @@ export default function ChatSessionPage() {
           </h4>
           <div className="grid grid-cols-2 gap-2">
             {[
-              ['Retrieval', formatDuration(debugState.retrievalMs)],
-              ['Embedding', formatDuration(debugState.embeddingMs)],
-              ['LLM', formatDuration(debugState.llmMs)],
-              ['Total', formatDuration(debugState.totalMs)],
+              ['检索', formatDuration(debugState.retrievalMs)],
+              ['向量化', formatDuration(debugState.embeddingMs)],
+              ['模型生成', formatDuration(debugState.llmMs)],
+              ['总耗时', formatDuration(debugState.totalMs)],
             ].map(([label, value]) => (
               <MetricCard key={label} label={label} value={value} />
             ))}
@@ -517,33 +762,59 @@ export default function ChatSessionPage() {
         <div className="space-y-3">
           <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
             <Terminal className="h-3.5 w-3.5" />
-            Graph 轨迹 ({debugState.graphTrace.length})
+            执行轨迹（点击联动）({debugState.graphTrace.length})
           </h4>
           {debugState.graphTrace.length > 0 ? (
             <div className="space-y-2">
-              {debugState.graphTrace.map((item, index) => (
-                <div key={`${item.node}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-medium text-slate-800">{item.node}</div>
-                      <div className="mt-1 text-[11px] text-slate-500">{item.detail}</div>
+              {debugState.graphTrace.map((item, index) => {
+                const summaryRows = buildTraceSummaryRows(item)
+                return (
+                  <button
+                    key={`${item.node}-${index}`}
+                    type="button"
+                    onClick={() => setSelectedTraceNode((current) => (current === item.node ? null : item.node))}
+                    className={clsx(
+                      'w-full rounded-lg border bg-white p-3 text-left shadow-sm transition-all',
+                      selectedTraceNode === item.node
+                        ? 'border-blue-300 bg-blue-50/60 shadow-blue-100'
+                        : 'border-slate-200 hover:border-blue-200 hover:bg-blue-50/30',
+                    )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                        <div className="text-xs font-medium text-slate-800">{getGraphNodeLabel(item.node)}</div>
+                        <div className="mt-1 text-[11px] leading-5 text-slate-500">{getGraphNodeDescription(item)}</div>
+                        </div>
+                      <div className="flex flex-col items-end gap-1 text-[10px]">
+                        <span
+                          className={clsx(
+                            'rounded border px-1.5 py-0.5 font-medium',
+                            item.status === 'completed'
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'border-amber-200 bg-amber-50 text-amber-700',
+                          )}
+                        >
+                          {getGraphStatusLabel(item.status)}
+                        </span>
+                        <span className="text-slate-400">{formatDuration(item.durationMs)}</span>
+                      </div>
                     </div>
-                    <div className="flex flex-col items-end gap-1 text-[10px]">
-                      <span
-                        className={clsx(
-                          'rounded border px-1.5 py-0.5 font-medium',
-                          item.status === 'completed'
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                            : 'border-amber-200 bg-amber-50 text-amber-700',
-                        )}
-                      >
-                        {item.status}
-                      </span>
-                      <span className="text-slate-400">{formatDuration(item.durationMs)}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                    {summaryRows.length > 0 ? (
+                      <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                        {summaryRows.map((row) => (
+                          <div key={`${item.node}-${row.label}`} className="space-y-1">
+                            <div className="text-[10px] uppercase tracking-wider text-slate-400">{row.label}</div>
+                            <div className={clsx('inline-flex max-w-full rounded-md border px-2 py-1 text-[11px] font-medium', getTraceSummaryToneClass(row.tone))}>
+                              <span className="break-all text-left">{row.value}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 text-[10px] text-slate-400">{selectedTraceNode === item.node ? '再次点击可取消联动高亮。' : '点击后可联动查看下面的召回片段和阈值判断。'}</div>
+                  </button>
+                )
+              })}
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-xs text-slate-500">
@@ -588,6 +859,12 @@ export default function ChatSessionPage() {
             <Zap className="h-3.5 w-3.5" />
             召回片段 ({debugState.retrievedChunks.length})
           </h4>
+          {selectedTraceItem ? (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/70 px-3 py-2 text-xs leading-6 text-blue-700">
+              <div className="font-medium">{getGraphNodeLabel(selectedTraceItem.node)}</div>
+              <div>{getTraceChunkHint(selectedTraceItem)}</div>
+            </div>
+          ) : null}
           <div className="space-y-2">
             {debugState.retrievedChunks.map((item, index) => {
               const previewTarget: PreviewableChunk = {
@@ -604,8 +881,26 @@ export default function ChatSessionPage() {
                 selectedPreviewSource?.document_id === item.documentId &&
                 selectedPreviewSource?.chunk_id === item.chunkId &&
                 selectedPreviewSource?.chunk_index === item.chunkIndex
+              const isTopChunk = index === 0
+              const isHighlighted =
+                traceChunkFocusMode === 'all' ||
+                (traceChunkFocusMode === 'cited' && item.whetherCited) ||
+                (traceChunkFocusMode === 'top1' && isTopChunk)
+              const isMuted =
+                traceChunkFocusMode === 'cited'
+                  ? !item.whetherCited
+                  : traceChunkFocusMode === 'top1'
+                    ? !isTopChunk
+                    : false
               return (
-                <div key={`${item.chunkId}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                <div
+                  key={`${item.chunkId}-${index}`}
+                  className={clsx(
+                    'rounded-lg border bg-white p-3 shadow-sm transition-all',
+                    isHighlighted ? 'border-blue-300 bg-blue-50/40 shadow-blue-100' : 'border-slate-200',
+                    isMuted && 'opacity-55',
+                  )}
+                >
                   <div className="mb-2 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-xs font-medium text-slate-800">{item.filename}</div>
@@ -613,7 +908,10 @@ export default function ChatSessionPage() {
                         <span>chunk {item.chunkIndex}</span>
                         <span>/</span>
                         <span>id {item.chunkId}</span>
-                        {item.whetherCited ? <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">cited</span> : null}
+                        {item.whetherCited ? <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">已引用</span> : null}
+                        {traceChunkFocusMode === 'top1' && isTopChunk ? (
+                          <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">最高分</span>
+                        ) : null}
                       </div>
                     </div>
                     <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">{item.score.toFixed(3)}</span>
@@ -640,6 +938,485 @@ export default function ChatSessionPage() {
     )
   }
 
+  const renderChunkPreviewCard = () => {
+    if (!selectedPreviewSource && !isPreviewLoading && !previewError && !citationPreview) {
+      return null
+    }
+
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">原文预览</div>
+            <div className="mt-1 text-sm font-medium text-slate-900">{selectedPreviewSource?.filename ?? citationPreview?.filename ?? '片段预览'}</div>
+          </div>
+          {selectedPreviewSource ? (
+            <div className="flex gap-2 text-xs text-slate-500">
+              <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1">chunk {selectedPreviewSource.chunk_index}</span>
+              {selectedPreviewSource.chunk_id ? <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1">ID {selectedPreviewSource.chunk_id}</span> : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="mt-4">
+          {isPreviewLoading ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">正在加载原文预览...</div>
+          ) : previewError ? (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{previewError}</div>
+          ) : citationPreview ? (
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
+              {citationPreview.preview_text ? (
+                <div className="whitespace-pre-wrap break-words">
+                  {previewSegments?.before}
+                  {previewSegments?.highlight ? <mark className="rounded bg-blue-100 px-1 py-0.5 text-slate-900 ring-1 ring-blue-200">{previewSegments.highlight}</mark> : null}
+                  {previewSegments?.after}
+                </div>
+              ) : (
+                '当前片段暂无可展示的原文内容。'
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">选择片段后，这里会展示对应 chunk 的原文预览。</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const renderEvidenceChunkCard = (
+    item: ChatDebugState['retrievedChunks'][number],
+    index: number,
+    options?: {
+      showCitationBadge?: boolean
+      showTopBadge?: boolean
+      focusNode?: string | null
+      muted?: boolean
+      highlighted?: boolean
+    },
+  ) => {
+    const previewTarget: PreviewableChunk = {
+      chunk_id: item.chunkId,
+      document_id: item.documentId,
+      filename: item.filename,
+      chunk_index: item.chunkIndex,
+      start_offset: item.startOffset,
+      end_offset: item.endOffset,
+      snippet: item.snippet,
+    }
+    const isCurrentPreview =
+      activeRightPanel !== null &&
+      selectedPreviewSource?.document_id === item.documentId &&
+      selectedPreviewSource?.chunk_id === item.chunkId &&
+      selectedPreviewSource?.chunk_index === item.chunkIndex
+
+    return (
+      <div
+        key={`${item.chunkId}-${index}`}
+        className={clsx(
+          'rounded-2xl border bg-white p-4 shadow-sm transition-all',
+          options?.highlighted ? 'border-blue-300 bg-blue-50/40 shadow-blue-100' : 'border-slate-200',
+          options?.muted && 'opacity-60',
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-slate-900">{item.filename}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+              <span>chunk {item.chunkIndex}</span>
+              <span>/</span>
+              <span>id {item.chunkId}</span>
+              {options?.showCitationBadge && item.whetherCited ? <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">已引用</span> : null}
+              {options?.showTopBadge ? <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">最高分</span> : null}
+            </div>
+          </div>
+          <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700">{item.score.toFixed(3)}</span>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-600">{item.snippet}</p>
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+          <div className="text-[11px] text-slate-400">{item.startOffset !== null && item.endOffset !== null ? `offset ${item.startOffset} - ${item.endOffset}` : '未提供定位信息'}</div>
+          <button
+            onClick={() =>
+              handleOpenChunkPreview(previewTarget, {
+                preserveDebugWorkspace: true,
+                focusNode: options?.focusNode ?? selectedTraceNode,
+              })
+            }
+            className={clsx(
+              'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+              isCurrentPreview ? 'bg-blue-50 text-blue-700' : 'text-blue-600 hover:bg-blue-50 hover:text-blue-700',
+            )}
+          >
+            查看原文
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderDebugWorkspace = () => {
+    if (!debugState) {
+      return (
+        <div className="flex h-full items-center justify-center">
+          <div className="max-w-lg rounded-3xl border border-dashed border-slate-300 bg-white px-8 py-12 text-center shadow-sm">
+            <div className="text-base font-semibold text-slate-900">还没有可展示的调试数据</div>
+            <div className="mt-3 text-sm leading-7 text-slate-500">发送一条新问题后，这里会展示本次问答的阈值判断、执行流程、检索证据和最终引用。</div>
+          </div>
+        </div>
+      )
+    }
+
+    const comparisonGap =
+      debugState.top1Score !== null && debugState.threshold !== null
+        ? (debugState.top1Score - debugState.threshold).toFixed(3)
+        : '--'
+
+    const renderContextCard = () => {
+      if (!debugState.finalContextPreview) {
+        return (
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+            当前节点没有额外的最终上下文可展示，通常表示本次请求未进入模型生成阶段。
+          </div>
+        )
+      }
+
+      return (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">送给模型的最终上下文</div>
+          <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-7 text-slate-600 whitespace-pre-wrap break-words">
+            {isContextExpanded || debugState.finalContextPreview.length <= 360 ? debugState.finalContextPreview : `${debugState.finalContextPreview.slice(0, 360)}...`}
+          </div>
+          {debugState.finalContextPreview.length > 360 ? (
+            <button onClick={() => setIsContextExpanded((current) => !current)} className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700">
+              {isContextExpanded ? (
+                <>
+                  收起上下文
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </>
+              ) : (
+                <>
+                  展开上下文
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </>
+              )}
+            </button>
+          ) : null}
+        </div>
+      )
+    }
+
+    const renderSystemEvidence = () => {
+      if (!selectedTraceItem) {
+        return null
+      }
+
+      return (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">处理结果</div>
+            <div className="mt-3 text-base font-semibold text-slate-900">{getGraphNodeLabel(selectedTraceItem.node)}</div>
+            <div className="mt-2 text-sm leading-7 text-slate-600">{getGraphNodeDescription(selectedTraceItem)}</div>
+            {buildTraceSummaryRows(selectedTraceItem).length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {buildTraceSummaryRows(selectedTraceItem).map((row) => (
+                  <span key={`${selectedTraceItem.node}-${row.label}`} className={clsx('rounded-full border px-3 py-1 text-xs font-medium', getTraceSummaryToneClass(row.tone))}>
+                    {row.label}: {row.value}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {selectedTraceItem.node === 'finalize_response' ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              <MetricCard label="会话标题" value={conversation?.title ?? '当前会话'} />
+              <MetricCard label="知识库" value={debugState.knowledgeBaseName} />
+              <MetricCard label="执行耗时" value={formatDuration(selectedTraceItem.durationMs)} />
+            </div>
+          ) : null}
+        </div>
+      )
+    }
+
+    const renderEvidencePanel = () => {
+      if (!selectedTraceItem) {
+        return (
+          <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center text-sm text-slate-500">
+            请选择左侧一个执行步骤，这里会展示对应的判断依据和证据。
+          </div>
+        )
+      }
+
+      if (evidenceMode === 'rewrite') {
+        return (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">改写结论</div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <MetricCard label="是否使用历史消息" value={selectedTraceItem.usedHistory ? '是' : '否'} />
+                <MetricCard label="流程状态" value={getGraphStatusLabel(selectedTraceItem.status)} />
+              </div>
+            </div>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">原始问题</div>
+                <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-7 text-slate-700">{debugState.question}</div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">最终检索问题</div>
+                <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-7 text-slate-700">{selectedTraceItem.rewrittenQuestion ?? debugState.question}</div>
+              </div>
+            </div>
+          </div>
+        )
+      }
+
+      if (evidenceMode === 'retrieval') {
+        return (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">
+              当前正在查看检索结果。下面按相似度从高到低展示本次召回到的全部候选片段。
+            </div>
+            <div className="grid gap-4 xl:grid-cols-2">
+              {debugState.retrievedChunks.map((item, index) =>
+                renderEvidenceChunkCard(item, index, {
+                  showCitationBadge: true,
+                  showTopBadge: index === 0,
+                  focusNode: 'retrieve_context',
+                  highlighted: true,
+                }),
+              )}
+            </div>
+            {renderContextCard()}
+          </div>
+        )
+      }
+
+      if (evidenceMode === 'guard') {
+        return (
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <MetricCard label="最高相似度" value={formatScore(selectedTraceItem.top1Score)} className="border-emerald-200 bg-emerald-50/70" />
+              <MetricCard label="拒答阈值" value={formatScore(selectedTraceItem.threshold)} className="border-amber-200 bg-amber-50/70" />
+              <MetricCard label="分差" value={comparisonGap === '--' ? '--' : comparisonGap} className="border-blue-200 bg-blue-50/70" />
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">判定结论</div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">{getGraphDecisionLabel(selectedTraceItem.decision)}</div>
+                </div>
+                <span
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium',
+                    selectedTraceItem.decision === 'reject' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700',
+                  )}
+                >
+                  {selectedTraceItem.decision === 'reject' ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                  {getGraphNodeDescription(selectedTraceItem)}
+                </span>
+              </div>
+            </div>
+            {topRetrievedChunk ? (
+              <div className="space-y-3">
+                <div className="text-sm font-semibold text-slate-900">最高分片段</div>
+                {renderEvidenceChunkCard(topRetrievedChunk, 0, {
+                  showCitationBadge: true,
+                  showTopBadge: true,
+                  focusNode: 'relevance_guard',
+                  highlighted: true,
+                })}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">本次没有召回结果，所以系统直接触发拒答。</div>
+            )}
+            {debugState.retrievedChunks.length > 1 ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <button
+                  onClick={() => setIsGuardChunksExpanded((current) => !current)}
+                  className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:border-blue-200 hover:bg-blue-50/60"
+                >
+                  <span>查看其他召回片段（{debugState.retrievedChunks.length - 1}）</span>
+                  {isGuardChunksExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </button>
+                {isGuardChunksExpanded ? (
+                  <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                    {debugState.retrievedChunks.slice(1).map((item, index) =>
+                      renderEvidenceChunkCard(item, index + 1, {
+                        showCitationBadge: true,
+                        focusNode: 'relevance_guard',
+                      }),
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      }
+
+      if (evidenceMode === 'citations') {
+        return (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">
+              当前只展示最终真正被答案引用的片段。未引用的召回片段不会出现在这里。
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <MetricCard label="最终引用数量" value={String(selectedTraceItem.citedCount ?? citedRetrievedChunks.length)} className="border-blue-200 bg-blue-50/70" />
+              <MetricCard label="引用来源" value={selectedTraceItem.usedFallbackCitations ? '自动兜底引用' : '模型显式引用'} className={selectedTraceItem.usedFallbackCitations ? 'border-amber-200 bg-amber-50/70' : 'border-emerald-200 bg-emerald-50/70'} />
+              <MetricCard label="最终判定" value={getGraphDecisionLabel(debugState.decision)} />
+            </div>
+            {citedRetrievedChunks.length > 0 ? (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {citedRetrievedChunks.map((item, index) =>
+                  renderEvidenceChunkCard(item, index, {
+                    showCitationBadge: true,
+                    focusNode: 'build_citations',
+                    highlighted: true,
+                  }),
+                )}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">当前没有可展示的最终引用。</div>
+            )}
+          </div>
+        )
+      }
+
+      if (evidenceMode === 'answer') {
+        return (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">最终回答预览</div>
+              <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <AssistantMarkdown content={latestAssistantMessage?.content || '当前没有可展示的回答内容。'} isStreaming={latestAssistantMessage?.status === 'streaming'} />
+              </div>
+            </div>
+            {citedRetrievedChunks.length > 0 ? (
+              <div className="space-y-3">
+                <div className="text-sm font-semibold text-slate-900">本次回答引用的片段</div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {citedRetrievedChunks.map((item, index) =>
+                    renderEvidenceChunkCard(item, index, {
+                      showCitationBadge: true,
+                      focusNode: selectedTraceItem.node,
+                      highlighted: true,
+                    }),
+                  )}
+                </div>
+              </div>
+            ) : null}
+            {renderContextCard()}
+          </div>
+        )
+      }
+
+      return renderSystemEvidence()
+    }
+
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-6">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">本次问题</div>
+              <div className="mt-2 text-lg font-semibold text-slate-900">{debugState.question}</div>
+              <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+                <Database className="h-3.5 w-3.5" />
+                {debugState.knowledgeBaseName}
+              </div>
+            </div>
+            <div className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm">
+              {debugState.decision === 'reject' ? <AlertTriangle className="h-3.5 w-3.5 text-amber-700" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700" />}
+              <span className={debugState.decision === 'reject' ? 'text-amber-700' : 'text-emerald-700'}>{getGraphDecisionLabel(debugState.decision)}</span>
+            </div>
+          </div>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <MetricCard label="最高相似度" value={formatScore(debugState.top1Score)} className="border-emerald-200 bg-emerald-50/70" />
+            <MetricCard label="拒答阈值" value={formatScore(debugState.threshold)} className="border-amber-200 bg-amber-50/70" />
+            <MetricCard label="最终引用" value={String(citedRetrievedChunks.length)} className="border-blue-200 bg-blue-50/70" />
+            <MetricCard label="总耗时" value={formatDuration(debugState.totalMs)} />
+            <MetricCard label="检索耗时" value={formatDuration(debugState.retrievalMs)} />
+            <MetricCard label="模型生成" value={formatDuration(debugState.llmMs)} />
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <div className="flex min-h-0 flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-2 pb-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">执行流程</div>
+                <div className="mt-1 text-xs text-slate-500">按步骤选择，右侧会同步展示对应证据。</div>
+              </div>
+              <div className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-500">{debugState.graphTrace.length} 步</div>
+            </div>
+            <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-2 pb-4">
+              {debugState.graphTrace.map((item, index) => {
+                const summaryRows = buildTraceSummaryRows(item).slice(0, 2)
+                const isSelected = selectedTraceNode === item.node
+                return (
+                  <button
+                    key={`${item.node}-${index}`}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTraceNode(item.node)
+                      setIsContextExpanded(false)
+                    }}
+                    className={clsx(
+                      'w-full rounded-2xl border p-4 text-left transition-all',
+                      isSelected ? 'border-blue-300 bg-blue-50/70 shadow-sm shadow-blue-100' : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50/40',
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">{index + 1}</span>
+                          <span className="text-sm font-semibold text-slate-900">{getGraphNodeLabel(item.node)}</span>
+                        </div>
+                        <div className="mt-2 text-xs leading-6 text-slate-600">{getGraphNodeDescription(item)}</div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 text-[10px]">
+                        <span
+                          className={clsx(
+                            'min-w-[56px] whitespace-nowrap rounded border px-2 py-0.5 text-center font-medium leading-5',
+                            item.status === 'completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700',
+                          )}
+                        >
+                          {getGraphStatusLabel(item.status)}
+                        </span>
+                        <span className="text-slate-400">{formatDuration(item.durationMs)}</span>
+                      </div>
+                    </div>
+                    {summaryRows.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {summaryRows.map((row) => (
+                          <span key={`${item.node}-${row.label}`} className={clsx('rounded-full border px-2.5 py-1 text-[11px] font-medium', getTraceSummaryToneClass(row.tone))}>
+                            {row.label}: {row.value}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col rounded-3xl border border-slate-200 bg-slate-50/70 p-5 shadow-sm">
+            <div className="flex flex-col gap-2 border-b border-slate-200 pb-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <Search className="h-4 w-4 text-blue-600" />
+                {getDebugEvidenceTitle(evidenceMode)}
+              </div>
+              {selectedTraceItem ? <div className="text-sm leading-6 text-slate-500">{getTraceChunkHint(selectedTraceItem)}</div> : null}
+            </div>
+            <div className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto pr-2 pb-4">
+              {renderEvidencePanel()}
+              {renderChunkPreviewCard()}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex h-full flex-1 overflow-hidden bg-white">
       <div className="relative flex min-w-0 flex-1 flex-col bg-white">
@@ -653,14 +1430,14 @@ export default function ChatSessionPage() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setActiveRightPanel((current) => (current === 'debug' ? null : 'debug'))}
+              onClick={() => (isDebugOpen ? setActiveRightPanel(null) : openDebugWorkspace())}
               className={clsx(
                 'flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
                 isDebugOpen ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
               )}
             >
               <Terminal className="h-3.5 w-3.5" />
-              调试面板
+              调试工作区
             </button>
             <button className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
               <MoreHorizontal className="h-4 w-4" />
@@ -815,26 +1592,31 @@ export default function ChatSessionPage() {
       </div>
 
       {activeRightPanel ? (
-        <div className="z-20 flex w-80 flex-shrink-0 flex-col border-l border-slate-200 bg-slate-50 shadow-[-4px_0_24px_-12px_rgba(0,0,0,0.05)]">
-          <div className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4">
-            <div className="flex items-center gap-2 text-sm font-medium text-slate-800">
-              {isDebugOpen ? <Terminal className="h-4 w-4 text-blue-600" /> : <FileText className="h-4 w-4 text-blue-600" />}
-              {isDebugOpen ? 'RAG 调试视图' : '原文预览'}
+        <div className="absolute inset-0 z-30 bg-slate-950/30 p-3 backdrop-blur-sm sm:p-4">
+          <div className="flex h-full flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-slate-100 shadow-2xl shadow-slate-950/10">
+            <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-5">
+              <div className="flex min-w-0 items-center gap-3">
+                {isDebugOpen ? <Terminal className="h-4 w-4 text-blue-600" /> : <FileText className="h-4 w-4 text-blue-600" />}
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-900">{isDebugOpen ? 'RAG 调试工作区' : '原文预览'}</div>
+                  <div className="truncate text-xs text-slate-500">{conversation?.title ?? debugState?.question ?? '当前会话'}</div>
+                </div>
+              </div>
+              <button onClick={() => setActiveRightPanel(null)} className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
+                <X className="h-4 w-4" />
+              </button>
             </div>
-            <button onClick={() => setActiveRightPanel(null)} className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
-              <X className="h-4 w-4" />
-            </button>
+            <div className="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">{isDebugOpen ? renderDebugWorkspace() : <div className="mx-auto h-full max-w-5xl overflow-y-auto">{renderPreviewPanel()}</div>}</div>
           </div>
-          <div className="flex-1 space-y-6 overflow-y-auto p-4">{isDebugOpen ? renderDebugPanel() : renderPreviewPanel()}</div>
         </div>
       ) : null}
     </div>
   )
 }
 
-function Metric({ label, value, truncate = false }: { label: string; value: string; truncate?: boolean }) {
+function Metric({ label, value, truncate = false, className }: { label: string; value: string; truncate?: boolean; className?: string }) {
   return (
-    <div>
+    <div className={className}>
       <div className="mb-0.5 text-[10px] text-slate-400">{label}</div>
       <div className={clsx('text-slate-700', truncate && 'truncate')} title={truncate ? value : undefined}>
         {value}
@@ -843,9 +1625,9 @@ function Metric({ label, value, truncate = false }: { label: string; value: stri
   )
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
+function MetricCard({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+    <div className={clsx('rounded-lg border border-slate-200 bg-white p-3 shadow-sm', className)}>
       <div className="mb-1 text-[10px] uppercase tracking-wider text-slate-400">{label}</div>
       <div className="text-sm font-medium text-slate-800">{value}</div>
     </div>

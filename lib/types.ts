@@ -106,6 +106,14 @@ export interface ChatAskDebugGraphTraceItem {
   status: "completed" | "skipped";
   duration_ms: number;
   detail: string;
+  used_history: boolean | null;
+  rewritten_question: string | null;
+  retrieval_count: number | null;
+  top1_score: number | null;
+  threshold: number | null;
+  decision: "answer" | "reject" | null;
+  cited_count: number | null;
+  used_fallback_citations: boolean | null;
 }
 
 export interface ChatAskDebugInfo {
@@ -210,6 +218,14 @@ export interface ChatDebugState {
     status: "completed" | "skipped";
     durationMs: number;
     detail: string;
+    usedHistory: boolean | null;
+    rewrittenQuestion: string | null;
+    retrievalCount: number | null;
+    top1Score: number | null;
+    threshold: number | null;
+    decision: "answer" | "reject" | null;
+    citedCount: number | null;
+    usedFallbackCitations: boolean | null;
   }>;
   retrievedChunks: Array<{
     chunkId: number;
