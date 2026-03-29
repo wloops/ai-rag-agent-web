@@ -54,6 +54,13 @@ export function buildChatDebugState(params: {
     totalMs: response.debug?.total_ms ?? null,
     embeddingMs: response.debug?.embedding_ms ?? null,
     finalContextPreview: response.debug?.final_context_preview ?? null,
+    graphTrace:
+      response.debug?.graph_trace.map((item) => ({
+        node: item.node,
+        status: item.status,
+        durationMs: item.duration_ms,
+        detail: item.detail,
+      })) ?? [],
     retrievedChunks:
       response.debug?.retrieved_chunks.map((item) => ({
         chunkId: item.chunk_id,
@@ -140,6 +147,34 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
       };
     }) ?? [];
 
+  const rawGraphTrace =
+    rawState.graphTrace ??
+    ((rawState as Partial<ChatDebugState> & {
+      graph_trace?: Array<{
+        node?: string;
+        status?: "completed" | "skipped";
+        duration_ms?: number;
+        detail?: string;
+      }>;
+    }).graph_trace ?? []);
+
+  const normalizedGraphTrace = rawGraphTrace.map((item) => {
+    const traceItem = item as {
+      node?: string;
+      status?: "completed" | "skipped";
+      durationMs?: number;
+      duration_ms?: number;
+      detail?: string;
+    };
+
+    return {
+      node: traceItem.node ?? "",
+      status: traceItem.status ?? "completed",
+      durationMs: traceItem.durationMs ?? traceItem.duration_ms ?? 0,
+      detail: traceItem.detail ?? "",
+    };
+  });
+
   return {
     conversationId: rawState.conversationId,
     knowledgeBaseId: rawState.knowledgeBaseId ?? 0,
@@ -154,6 +189,7 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
     totalMs: rawState.totalMs ?? null,
     embeddingMs: rawState.embeddingMs ?? null,
     finalContextPreview: rawState.finalContextPreview ?? null,
+    graphTrace: normalizedGraphTrace,
     retrievedChunks: normalizedChunks,
     savedAt: rawState.savedAt ?? new Date().toISOString(),
   };

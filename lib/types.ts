@@ -101,6 +101,13 @@ export interface ChatAskDebugRetrievedChunkItem {
   whether_cited: boolean;
 }
 
+export interface ChatAskDebugGraphTraceItem {
+  node: string;
+  status: "completed" | "skipped";
+  duration_ms: number;
+  detail: string;
+}
+
 export interface ChatAskDebugInfo {
   question: string;
   knowledge_base_id: number;
@@ -114,6 +121,7 @@ export interface ChatAskDebugInfo {
   embedding_ms: number | null;
   final_context_preview: string | null;
   retrieved_chunks: ChatAskDebugRetrievedChunkItem[];
+  graph_trace: ChatAskDebugGraphTraceItem[];
 }
 
 export interface AskChatRequest {
@@ -197,6 +205,12 @@ export interface ChatDebugState {
   totalMs: number | null;
   embeddingMs: number | null;
   finalContextPreview: string | null;
+  graphTrace: Array<{
+    node: string;
+    status: "completed" | "skipped";
+    durationMs: number;
+    detail: string;
+  }>;
   retrievedChunks: Array<{
     chunkId: number;
     documentId: number;

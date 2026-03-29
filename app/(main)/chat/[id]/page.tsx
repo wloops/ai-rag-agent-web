@@ -516,6 +516,43 @@ export default function ChatSessionPage() {
         </div>
         <div className="space-y-3">
           <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+            <Terminal className="h-3.5 w-3.5" />
+            Graph 轨迹 ({debugState.graphTrace.length})
+          </h4>
+          {debugState.graphTrace.length > 0 ? (
+            <div className="space-y-2">
+              {debugState.graphTrace.map((item, index) => (
+                <div key={`${item.node}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-medium text-slate-800">{item.node}</div>
+                      <div className="mt-1 text-[11px] text-slate-500">{item.detail}</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 text-[10px]">
+                      <span
+                        className={clsx(
+                          'rounded border px-1.5 py-0.5 font-medium',
+                          item.status === 'completed'
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-amber-200 bg-amber-50 text-amber-700',
+                        )}
+                      >
+                        {item.status}
+                      </span>
+                      <span className="text-slate-400">{formatDuration(item.durationMs)}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-xs text-slate-500">
+              当前请求尚未记录可展示的图轨迹。
+            </div>
+          )}
+        </div>
+        <div className="space-y-3">
+          <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
             <TextQuote className="h-3.5 w-3.5" />
             最终上下文
           </h4>
