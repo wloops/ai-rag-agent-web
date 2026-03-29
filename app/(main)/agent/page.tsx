@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Bot, Database, FileText, Loader2, Play, Sparkles, Wand2 } from "lucide-react";
 
 import { useAuth } from "@/components/auth-provider";
 import { agentApi, ApiError, kbApi } from "@/lib/api";
+import { SHOW_AGENT_WORKBENCH } from "@/lib/features";
 import type { AgentRunResponse, AgentTaskType, KnowledgeBaseItem } from "@/lib/types";
 
 const TASK_OPTIONS: Array<{
@@ -47,7 +48,8 @@ function requiresQuery(taskType: AgentTaskType) {
 }
 
 export default function AgentPage() {
-  const { token } = useAuth();
+  const router = useRouter();
+  const { token, isLoading: isAuthLoading } = useAuth();
   const searchParams = useSearchParams();
   const knowledgeBaseIdFromUrl = Number(searchParams.get("knowledgeBaseId"));
 
@@ -61,6 +63,16 @@ export default function AgentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    if (!SHOW_AGENT_WORKBENCH && !isAuthLoading) {
+      router.replace("/dashboard");
+    }
+  }, [isAuthLoading, router]);
+
+  useEffect(() => {
+    if (!SHOW_AGENT_WORKBENCH) {
+      return;
+    }
+
     const currentToken = token ?? "";
     if (!currentToken) {
       return;
@@ -108,6 +120,10 @@ export default function AgentPage() {
     () => knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId) ?? null,
     [knowledgeBases, selectedKnowledgeBaseId],
   );
+
+  if (!SHOW_AGENT_WORKBENCH) {
+    return null;
+  }
 
   async function handleRunAgent(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

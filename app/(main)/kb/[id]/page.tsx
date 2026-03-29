@@ -22,6 +22,7 @@ import clsx from "clsx";
 
 import { useAuth } from "@/components/auth-provider";
 import { ApiError, documentsApi, kbApi } from "@/lib/api";
+import { SHOW_AGENT_WORKBENCH } from "@/lib/features";
 import { formatDateTime, formatDocumentStatus, formatFileType } from "@/lib/format";
 import type { DocumentItem, KnowledgeBaseItem } from "@/lib/types";
 
@@ -330,6 +331,13 @@ export default function KBDetailPage() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              {!SHOW_AGENT_WORKBENCH ? (
+                <style jsx>{`
+                  a[href^="/agent"] {
+                    display: none;
+                  }
+                `}</style>
+              ) : null}
               <button
                 onClick={() => setIsSettingsOpen(true)}
                 className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
