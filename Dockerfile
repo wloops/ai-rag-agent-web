@@ -2,7 +2,9 @@ FROM node:20-slim AS base
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    PNPM_FETCH_RETRIES=5 \
+    PNPM_FETCH_TIMEOUT=120000
 
 RUN corepack enable
 
