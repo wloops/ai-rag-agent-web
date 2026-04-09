@@ -44,6 +44,10 @@ interface ChatStreamHandlers {
   onError?: (payload: ChatStreamErrorPayload) => void;
 }
 
+interface ChatStreamOptions {
+  signal?: AbortSignal;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -314,6 +318,7 @@ export const chatApi = {
     token: string,
     payload: AskChatRequest,
     handlers: ChatStreamHandlers,
+    options: ChatStreamOptions = {},
   ) {
     const response = await fetch(`${API_BASE_URL}/api/chat/ask/stream`, {
       method: "POST",
@@ -324,6 +329,7 @@ export const chatApi = {
       },
       body: JSON.stringify(payload),
       cache: "no-store",
+      signal: options.signal,
     });
 
     if (!response.ok) {
