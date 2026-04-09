@@ -16,6 +16,8 @@ import type { ChatCitationItem, ChatDebugState, ChatMessageViewModel, ChunkPrevi
 
 const DEFAULT_TOP_K = 3
 const AUTO_SCROLL_THRESHOLD = 96
+const STREAM_RECOVERY_MAX_ATTEMPTS = 4
+const STREAM_RECOVERY_INTERVAL_MS = 450
 
 type RightPanelType = 'debug' | 'citation'
 type PreviewableChunk = Pick<ChatCitationItem, 'chunk_id' | 'document_id' | 'filename' | 'chunk_index' | 'start_offset' | 'end_offset'> & { snippet: string | null }
@@ -623,6 +625,26 @@ export default function ChatSessionPage() {
     setMessages(mapMessagesToViewModel(await chatApi.listMessages(currentToken, currentConversationId)))
   }
 
+  async function recoverMessagesAfterStream(
+    currentToken: string,
+    currentConversationId: number,
+    expectedMessageCount: number,
+  ) {
+    for (let attempt = 0; attempt < STREAM_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
+      const messageItems = await chatApi.listMessages(currentToken, currentConversationId)
+      if (messageItems.length >= expectedMessageCount) {
+        return mapMessagesToViewModel(messageItems)
+      }
+
+      if (attempt < STREAM_RECOVERY_MAX_ATTEMPTS - 1) {
+        // 某些线上链路里，消息入库会比流请求的结束感知更晚一拍，这里做短重试避免用户手动刷新。
+        await new Promise((resolve) => window.setTimeout(resolve, STREAM_RECOVERY_INTERVAL_MS * (attempt + 1)))
+      }
+    }
+
+    return null
+  }
+
   function openDebugWorkspace(preferredNode?: string | null) {
     setActiveRightPanel('debug')
     if (!debugState) {
@@ -662,6 +684,7 @@ export default function ChatSessionPage() {
     setIsSending(true)
     shouldStickToBottomRef.current = true
     setShowScrollToBottom(false)
+    const expectedMessageCount = messages.length + 2
 
     const handle = startManagedChatStream({
       token: currentToken,
@@ -680,13 +703,34 @@ export default function ChatSessionPage() {
       },
     })
 
-    void handle.promise.catch((sendError) => {
-      setPendingQuestion(null)
-      setShowPendingAssistant(false)
-      setIsSending(false)
-      setInput(question)
-      setError(sendError instanceof ApiError ? sendError.message : '发送失败，请稍后重试。')
-    })
+    void handle.promise
+      .then(async () => {
+        const latestSnapshot = getManagedChatStreamSnapshot(conversation.id)
+        if (latestSnapshot?.status === 'complete' || latestSnapshot?.status === 'error') {
+          return
+        }
+
+        const recoveredMessages = await recoverMessagesAfterStream(currentToken, conversation.id, expectedMessageCount)
+        if (!recoveredMessages) {
+          return
+        }
+
+        setMessages(recoveredMessages)
+        setPendingQuestion(null)
+        setShowPendingAssistant(false)
+        setIsSending(false)
+        setError('')
+        notifyChatSessionsChanged()
+        clearManagedChatStream(conversation.id)
+        setActiveStream(null)
+      })
+      .catch((sendError) => {
+        setPendingQuestion(null)
+        setShowPendingAssistant(false)
+        setIsSending(false)
+        setInput(question)
+        setError(sendError instanceof ApiError ? sendError.message : '发送失败，请稍后重试。')
+      })
   }
 
   async function handleOpenChunkPreview(source: PreviewableChunk, options?: { preserveDebugWorkspace?: boolean; focusNode?: string | null }) {
