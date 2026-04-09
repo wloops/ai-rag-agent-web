@@ -229,33 +229,6 @@ export default function KBDetailPage() {
 
   async function handleDeleteDocument(document: DocumentItem) {
     setDocumentDeleteTarget(document);
-    return;
-
-    const currentToken = token ?? "";
-    if (!currentToken) {
-      return;
-    }
-    if (!window.confirm(`确认删除文档“${document.filename}”吗？`)) {
-      return;
-    }
-
-    setDeletingDocumentId(document.id);
-    setUploadError("");
-    try {
-      await documentsApi.delete(currentToken, document.id);
-      const [updatedKnowledgeBase, updatedDocuments] = await Promise.all([
-        kbApi.get(currentToken, knowledgeBaseId),
-        documentsApi.list(currentToken, knowledgeBaseId),
-      ]);
-      setKnowledgeBase(updatedKnowledgeBase);
-      setDocuments(updatedDocuments);
-    } catch (deleteError) {
-      setUploadError(
-        deleteError instanceof ApiError ? deleteError.message : "删除文档失败，请稍后重试。",
-      );
-    } finally {
-      setDeletingDocumentId(null);
-    }
   }
 
   async function confirmDeleteDocument() {
