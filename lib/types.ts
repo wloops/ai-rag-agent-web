@@ -87,6 +87,16 @@ export interface RetrievedChunkDebugItem {
   chunk_index: number;
   content: string;
   score: number;
+  guard_score?: number | null;
+  source_channels?: string[];
+  dense_score?: number | null;
+  bm25_score?: number | null;
+  fusion_score?: number | null;
+  rerank_score?: number | null;
+  dense_rank?: number | null;
+  bm25_rank?: number | null;
+  fusion_rank?: number | null;
+  rerank_rank?: number | null;
 }
 
 export interface ChatAskDebugRetrievedChunkItem {
@@ -96,6 +106,16 @@ export interface ChatAskDebugRetrievedChunkItem {
   chunk_index: number;
   snippet: string;
   score: number;
+  guard_score?: number | null;
+  source_channels?: string[];
+  dense_score?: number | null;
+  bm25_score?: number | null;
+  fusion_score?: number | null;
+  rerank_score?: number | null;
+  dense_rank?: number | null;
+  bm25_rank?: number | null;
+  fusion_rank?: number | null;
+  rerank_rank?: number | null;
   start_offset: number | null;
   end_offset: number | null;
   whether_cited: boolean;
@@ -109,9 +129,14 @@ export interface ChatAskDebugGraphTraceItem {
   used_history: boolean | null;
   rewritten_question: string | null;
   retrieval_count: number | null;
+  dense_candidates_count?: number | null;
+  bm25_candidates_count?: number | null;
+  fusion_candidates_count?: number | null;
+  rerank_applied?: boolean | null;
   top1_score: number | null;
   threshold: number | null;
   decision: "answer" | "reject" | null;
+  reject_reason?: "no_candidate" | "low_confidence" | null;
   cited_count: number | null;
   used_fallback_citations: boolean | null;
 }
@@ -127,6 +152,8 @@ export interface ChatAskDebugInfo {
   llm_ms: number;
   total_ms: number;
   embedding_ms: number | null;
+  rerank_enabled?: boolean | null;
+  reject_reason?: "no_candidate" | "low_confidence" | null;
   final_context_preview: string | null;
   retrieved_chunks: ChatAskDebugRetrievedChunkItem[];
   graph_trace: ChatAskDebugGraphTraceItem[];
@@ -212,6 +239,8 @@ export interface ChatDebugState {
   llmMs: number | null;
   totalMs: number | null;
   embeddingMs: number | null;
+  rerankEnabled?: boolean | null;
+  rejectReason?: "no_candidate" | "low_confidence" | null;
   finalContextPreview: string | null;
   graphTrace: Array<{
     node: string;
@@ -221,9 +250,14 @@ export interface ChatDebugState {
     usedHistory: boolean | null;
     rewrittenQuestion: string | null;
     retrievalCount: number | null;
+    denseCandidatesCount?: number | null;
+    bm25CandidatesCount?: number | null;
+    fusionCandidatesCount?: number | null;
+    rerankApplied?: boolean | null;
     top1Score: number | null;
     threshold: number | null;
     decision: "answer" | "reject" | null;
+    rejectReason?: "no_candidate" | "low_confidence" | null;
     citedCount: number | null;
     usedFallbackCitations: boolean | null;
   }>;
@@ -234,6 +268,16 @@ export interface ChatDebugState {
     chunkIndex: number;
     snippet: string;
     score: number;
+    guardScore?: number | null;
+    sourceChannels?: string[];
+    denseScore?: number | null;
+    bm25Score?: number | null;
+    fusionScore?: number | null;
+    rerankScore?: number | null;
+    denseRank?: number | null;
+    bm25Rank?: number | null;
+    fusionRank?: number | null;
+    rerankRank?: number | null;
     startOffset: number | null;
     endOffset: number | null;
     whetherCited: boolean;

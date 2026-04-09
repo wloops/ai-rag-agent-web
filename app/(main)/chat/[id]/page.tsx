@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
@@ -29,7 +29,10 @@ const GRAPH_NODE_LABELS: Record<string, string> = {
   validate_request: '校验请求',
   resolve_conversation: '解析会话',
   rewrite_question: '问题改写',
-  retrieve_context: '检索上下文',
+  retrieve_dense_candidates: '向量召回',
+  retrieve_bm25_candidates: 'BM25 召回',
+  fuse_candidates: '候选融合',
+  rerank_candidates: 'Rerank 重排',
   relevance_guard: '相关度守卫',
   generate_answer: '生成回答',
   stream_answer: '流式生成回答',
@@ -51,32 +54,52 @@ function getGraphDecisionLabel(decision: GraphTraceItem['decision'] | ChatDebugS
   return '--'
 }
 
+function getRejectReasonLabel(reason: GraphTraceItem['rejectReason'] | ChatDebugState['rejectReason']) {
+  if (reason === 'no_candidate') return '无候选结果'
+  if (reason === 'low_confidence') return '候选置信度不足'
+  return '--'
+}
+
 function getGraphNodeDescription(item: GraphTraceItem) {
   if (item.node === 'validate_request') {
     return '已校验问题内容，并确认当前知识库可访问。'
   }
   if (item.node === 'resolve_conversation') {
-    return '已定位当前会话，并载入最近几轮对话作为上下文。'
+    return '已定位当前会话，并加载最近几轮消息作为上下文。'
   }
   if (item.node === 'rewrite_question') {
     return item.usedHistory ? '结合最近对话，将追问改写为独立问题。' : '没有可用历史，本次直接使用原问题。'
   }
-  if (item.node === 'retrieve_context') {
-    if (item.retrievalCount === null) return '尚未得到检索结果。'
-    if (item.retrievalCount === 0) return '没有召回到可用片段。'
-    return `从知识库召回 ${item.retrievalCount} 个片段，最高相似度 ${formatScore(item.top1Score)}。`
+  if (item.node === 'retrieve_dense_candidates') {
+    if (item.denseCandidatesCount === null && item.retrievalCount === null) return '尚未得到向量召回结果。'
+    if ((item.denseCandidatesCount ?? item.retrievalCount ?? 0) === 0) return '向量召回没有返回可用候选。'
+    return `向量召回得到 ${item.denseCandidatesCount ?? item.retrievalCount} 个候选，最高分 ${formatScore(item.top1Score)}。`
+  }
+  if (item.node === 'retrieve_bm25_candidates') {
+    if (item.bm25CandidatesCount === null) return '尚未生成 BM25 召回结果。'
+    if (item.bm25CandidatesCount === 0) return 'BM25 召回没有命中关键词候选。'
+    return `BM25 召回得到 ${item.bm25CandidatesCount} 个候选，用于补足术语和编号类命中。`
+  }
+  if (item.node === 'fuse_candidates') {
+    if (item.fusionCandidatesCount === null) return '尚未生成融合结果。'
+    if (item.fusionCandidatesCount === 0) return '融合后没有保留任何候选。'
+    return `已用 RRF 融合双路召回，保留 ${item.fusionCandidatesCount} 个候选。`
+  }
+  if (item.node === 'rerank_candidates') {
+    if (item.retrievalCount === null) return '尚未执行重排。'
+    return item.rerankApplied ? `已对 ${item.retrievalCount} 个候选完成 rerank 重排。` : 'rerank 未启用或不可用，已回退到融合结果排序。'
   }
   if (item.node === 'relevance_guard') {
     if (item.decision === 'answer') {
-      return `最高相似度 ${formatScore(item.top1Score)} 高于阈值 ${formatScore(item.threshold)}，允许继续回答。`
+      return `守卫分数 ${formatScore(item.top1Score)} 高于阈值 ${formatScore(item.threshold)}，允许继续回答。`
     }
     if (item.top1Score === null) {
-      return '没有可用召回结果，直接触发拒答。'
+      return '没有可用候选结果，直接触发拒答。'
     }
-    return `最高相似度 ${formatScore(item.top1Score)} 低于阈值 ${formatScore(item.threshold)}，触发拒答。`
+    return `守卫分数 ${formatScore(item.top1Score)} 低于阈值 ${formatScore(item.threshold)}，触发拒答。`
   }
   if (item.node === 'generate_answer' || item.node === 'stream_answer') {
-    return '基于通过筛选的召回片段生成最终回答。'
+    return '基于筛选后的候选片段生成最终回答。'
   }
   if (item.node === 'build_citations') {
     if (item.citedCount === null) return '正在整理回答引用。'
@@ -91,7 +114,7 @@ function getGraphNodeDescription(item: GraphTraceItem) {
 
 function getDebugEvidenceMode(node: string | null): DebugEvidenceMode {
   if (node === 'rewrite_question') return 'rewrite'
-  if (node === 'retrieve_context') return 'retrieval'
+  if (node === 'retrieve_dense_candidates' || node === 'retrieve_bm25_candidates' || node === 'fuse_candidates' || node === 'rerank_candidates') return 'retrieval'
   if (node === 'relevance_guard') return 'guard'
   if (node === 'generate_answer' || node === 'stream_answer') return 'answer'
   if (node === 'build_citations') return 'citations'
@@ -101,20 +124,20 @@ function getDebugEvidenceMode(node: string | null): DebugEvidenceMode {
 function getDebugEvidenceTitle(mode: DebugEvidenceMode) {
   if (mode === 'rewrite') return '问题改写依据'
   if (mode === 'retrieval') return '检索证据'
-  if (mode === 'guard') return '阈值判断依据'
+  if (mode === 'guard') return '阈值判定依据'
   if (mode === 'answer') return '回答生成结果'
   if (mode === 'citations') return '最终引用证据'
   return '系统处理结果'
 }
 
-function resolvePreferredTraceNode(
-  graphTrace: GraphTraceItem[],
-  preferredNode?: string | null,
-) {
+function resolvePreferredTraceNode(graphTrace: GraphTraceItem[], preferredNode?: string | null) {
   const preferredOrder = [
     preferredNode,
+    'rerank_candidates',
     'relevance_guard',
-    'retrieve_context',
+    'fuse_candidates',
+    'retrieve_bm25_candidates',
+    'retrieve_dense_candidates',
     'build_citations',
     'stream_answer',
     'generate_answer',
@@ -129,14 +152,13 @@ function resolvePreferredTraceNode(
 
   return graphTrace[0]?.node ?? null
 }
-
 function buildTraceSummaryRows(item: GraphTraceItem) {
   const rows: Array<{ label: string; value: string; tone?: 'slate' | 'blue' | 'emerald' | 'amber' }> = []
 
   if (item.node === 'rewrite_question') {
     rows.push({
       label: '历史消息',
-      value: item.usedHistory ? '使用最近消息改写' : '未使用历史，直接复用问题',
+      value: item.usedHistory ? '使用最近消息改写' : '未使用历史，直接复用原问题',
       tone: item.usedHistory ? 'blue' : 'slate',
     })
     if (item.rewrittenQuestion) {
@@ -147,18 +169,39 @@ function buildTraceSummaryRows(item: GraphTraceItem) {
     }
   }
 
-  if (item.node === 'retrieve_context') {
-    if (item.retrievalCount !== null) {
-      rows.push({ label: '召回数量', value: String(item.retrievalCount), tone: 'blue' })
+  if (item.node === 'retrieve_dense_candidates') {
+    if (item.denseCandidatesCount !== null) {
+      rows.push({ label: '向量候选', value: String(item.denseCandidatesCount), tone: 'blue' })
     }
     if (item.top1Score !== null) {
-      rows.push({ label: '最高相似度', value: formatScore(item.top1Score), tone: 'emerald' })
+      rows.push({ label: '最高分', value: formatScore(item.top1Score), tone: 'emerald' })
+    }
+  }
+
+  if (item.node === 'retrieve_bm25_candidates' && item.bm25CandidatesCount !== null) {
+    rows.push({ label: 'BM25 候选', value: String(item.bm25CandidatesCount), tone: 'blue' })
+  }
+
+  if (item.node === 'fuse_candidates' && item.fusionCandidatesCount !== null) {
+    rows.push({ label: '融合候选', value: String(item.fusionCandidatesCount), tone: 'blue' })
+  }
+
+  if (item.node === 'rerank_candidates') {
+    if (item.retrievalCount !== null) {
+      rows.push({ label: '重排输入', value: String(item.retrievalCount), tone: 'blue' })
+    }
+    if (item.rerankApplied !== null) {
+      rows.push({
+        label: 'Rerank',
+        value: item.rerankApplied ? '已执行' : '已降级',
+        tone: item.rerankApplied ? 'emerald' : 'amber',
+      })
     }
   }
 
   if (item.node === 'relevance_guard') {
     if (item.top1Score !== null) {
-      rows.push({ label: '最高相似度', value: formatScore(item.top1Score), tone: 'emerald' })
+      rows.push({ label: '守卫分数', value: formatScore(item.top1Score), tone: 'emerald' })
     }
     if (item.threshold !== null) {
       rows.push({ label: '拒答阈值', value: formatScore(item.threshold), tone: 'amber' })
@@ -168,6 +211,13 @@ function buildTraceSummaryRows(item: GraphTraceItem) {
         label: '判定',
         value: getGraphDecisionLabel(item.decision),
         tone: item.decision === 'answer' ? 'emerald' : 'amber',
+      })
+    }
+    if (item.rejectReason) {
+      rows.push({
+        label: '拒答原因',
+        value: getRejectReasonLabel(item.rejectReason),
+        tone: 'amber',
       })
     }
   }
@@ -189,8 +239,8 @@ function buildTraceSummaryRows(item: GraphTraceItem) {
 }
 
 function getTraceChunkFocusMode(node: string | null): TraceChunkFocusMode {
-  // 这里固定节点到片段区域的映射，避免调试口径随 UI 改动漂移。
-  if (node === 'retrieve_context') return 'all'
+  // 固定节点与证据区的联动规则，避免 UI 调整时检索解释漂移。
+  if (node === 'retrieve_dense_candidates' || node === 'retrieve_bm25_candidates' || node === 'fuse_candidates' || node === 'rerank_candidates') return 'all'
   if (node === 'build_citations') return 'cited'
   if (node === 'relevance_guard') return 'top1'
   return 'none'
@@ -198,13 +248,15 @@ function getTraceChunkFocusMode(node: string | null): TraceChunkFocusMode {
 
 function getTraceChunkHint(item: GraphTraceItem | null) {
   if (!item) return null
-  if (item.node === 'retrieve_context') return '当前正在查看检索结果，下面会高亮全部召回片段，便于解释排序依据。'
-  if (item.node === 'build_citations') return '当前正在查看最终引用，下面会高亮被答案实际引用的片段。'
-  if (item.node === 'relevance_guard') return '当前正在查看阈值判断，下面会突出最高分片段，并对比最高相似度与拒答阈值。'
-  if (item.node === 'rewrite_question') return '当前正在查看问题改写结果。这个节点主要解释追问是否被改写，不直接绑定具体片段。'
-  return '当前节点主要展示执行过程说明，没有额外的片段联动规则。'
+  if (item.node === 'retrieve_dense_candidates') return '当前查看向量召回结果，下面会高亮参与排序的候选片段。'
+  if (item.node === 'retrieve_bm25_candidates') return '当前查看 BM25 召回结果，下面会高亮命中关键词的候选片段。'
+  if (item.node === 'fuse_candidates') return '当前查看融合结果，下面展示双路召回合并后的候选片段。'
+  if (item.node === 'rerank_candidates') return '当前查看 rerank 结果，下面展示进入最终重排的候选片段。'
+  if (item.node === 'build_citations') return '当前查看最终引用，下面会高亮被答案实际引用的片段。'
+  if (item.node === 'relevance_guard') return '当前查看阈值判断，下面会突出守卫分数最高的候选片段。'
+  if (item.node === 'rewrite_question') return '当前查看问题改写结果。这个节点主要解释追问是否被改写，不直接绑定具体片段。'
+  return '当前节点主要展示执行说明，没有额外的片段联动规则。'
 }
-
 function getTraceSummaryToneClass(tone: 'slate' | 'blue' | 'emerald' | 'amber' = 'slate') {
   if (tone === 'blue') return 'border-blue-200 bg-blue-50 text-blue-700'
   if (tone === 'emerald') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -637,10 +689,7 @@ export default function ChatSessionPage() {
     })
   }
 
-  async function handleOpenChunkPreview(
-    source: PreviewableChunk,
-    options?: { preserveDebugWorkspace?: boolean; focusNode?: string | null },
-  ) {
+  async function handleOpenChunkPreview(source: PreviewableChunk, options?: { preserveDebugWorkspace?: boolean; focusNode?: string | null }) {
     const currentToken = token ?? ''
     if (!currentToken || !source.chunk_id) return
     const requestId = previewRequestIdRef.current + 1
@@ -703,7 +752,7 @@ export default function ChatSessionPage() {
     if (!debugState)
       return (
         <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
-          还没有可展示的调试数据。发送一条新问题后，这里会显示本次问答的阈值判断、上下文预览、耗时和召回片段。
+          还没有可展示的调试数据。发送一条新问题后，这里会显示本次问答的阈值判断、上下文预览、耗时和召回片段。{' '}
         </div>
       )
     return (
@@ -750,7 +799,7 @@ export default function ChatSessionPage() {
           </h4>
           <div className="grid grid-cols-2 gap-2">
             {[
-              ['检索', formatDuration(debugState.retrievalMs)],
+              ['检索耗时', formatDuration(debugState.retrievalMs)],
               ['向量化', formatDuration(debugState.embeddingMs)],
               ['模型生成', formatDuration(debugState.llmMs)],
               ['总耗时', formatDuration(debugState.totalMs)],
@@ -775,23 +824,19 @@ export default function ChatSessionPage() {
                     onClick={() => setSelectedTraceNode((current) => (current === item.node ? null : item.node))}
                     className={clsx(
                       'w-full rounded-lg border bg-white p-3 text-left shadow-sm transition-all',
-                      selectedTraceNode === item.node
-                        ? 'border-blue-300 bg-blue-50/60 shadow-blue-100'
-                        : 'border-slate-200 hover:border-blue-200 hover:bg-blue-50/30',
+                      selectedTraceNode === item.node ? 'border-blue-300 bg-blue-50/60 shadow-blue-100' : 'border-slate-200 hover:border-blue-200 hover:bg-blue-50/30',
                     )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
                         <div className="text-xs font-medium text-slate-800">{getGraphNodeLabel(item.node)}</div>
                         <div className="mt-1 text-[11px] leading-5 text-slate-500">{getGraphNodeDescription(item)}</div>
-                        </div>
+                      </div>
                       <div className="flex flex-col items-end gap-1 text-[10px]">
                         <span
                           className={clsx(
                             'rounded border px-1.5 py-0.5 font-medium',
-                            item.status === 'completed'
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : 'border-amber-200 bg-amber-50 text-amber-700',
+                            item.status === 'completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700',
                           )}
                         >
                           {getGraphStatusLabel(item.status)}
@@ -817,9 +862,7 @@ export default function ChatSessionPage() {
               })}
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-xs text-slate-500">
-              当前请求尚未记录可展示的图轨迹。
-            </div>
+            <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-xs text-slate-500">当前请求尚未记录可展示的执行轨迹。 </div>
           )}
         </div>
         <div className="space-y-3">
@@ -882,16 +925,8 @@ export default function ChatSessionPage() {
                 selectedPreviewSource?.chunk_id === item.chunkId &&
                 selectedPreviewSource?.chunk_index === item.chunkIndex
               const isTopChunk = index === 0
-              const isHighlighted =
-                traceChunkFocusMode === 'all' ||
-                (traceChunkFocusMode === 'cited' && item.whetherCited) ||
-                (traceChunkFocusMode === 'top1' && isTopChunk)
-              const isMuted =
-                traceChunkFocusMode === 'cited'
-                  ? !item.whetherCited
-                  : traceChunkFocusMode === 'top1'
-                    ? !isTopChunk
-                    : false
+              const isHighlighted = traceChunkFocusMode === 'all' || (traceChunkFocusMode === 'cited' && item.whetherCited) || (traceChunkFocusMode === 'top1' && isTopChunk)
+              const isMuted = traceChunkFocusMode === 'cited' ? !item.whetherCited : traceChunkFocusMode === 'top1' ? !isTopChunk : false
               return (
                 <div
                   key={`${item.chunkId}-${index}`}
@@ -1003,10 +1038,7 @@ export default function ChatSessionPage() {
       snippet: item.snippet,
     }
     const isCurrentPreview =
-      activeRightPanel !== null &&
-      selectedPreviewSource?.document_id === item.documentId &&
-      selectedPreviewSource?.chunk_id === item.chunkId &&
-      selectedPreviewSource?.chunk_index === item.chunkIndex
+      activeRightPanel !== null && selectedPreviewSource?.document_id === item.documentId && selectedPreviewSource?.chunk_id === item.chunkId && selectedPreviewSource?.chunk_index === item.chunkIndex
 
     return (
       <div
@@ -1040,10 +1072,7 @@ export default function ChatSessionPage() {
                 focusNode: options?.focusNode ?? selectedTraceNode,
               })
             }
-            className={clsx(
-              'rounded-md px-2 py-1 text-xs font-medium transition-colors',
-              isCurrentPreview ? 'bg-blue-50 text-blue-700' : 'text-blue-600 hover:bg-blue-50 hover:text-blue-700',
-            )}
+            className={clsx('rounded-md px-2 py-1 text-xs font-medium transition-colors', isCurrentPreview ? 'bg-blue-50 text-blue-700' : 'text-blue-600 hover:bg-blue-50 hover:text-blue-700')}
           >
             查看原文
           </button>
@@ -1064,23 +1093,20 @@ export default function ChatSessionPage() {
       )
     }
 
-    const comparisonGap =
-      debugState.top1Score !== null && debugState.threshold !== null
-        ? (debugState.top1Score - debugState.threshold).toFixed(3)
-        : '--'
+    const comparisonGap = debugState.top1Score !== null && debugState.threshold !== null ? (debugState.top1Score - debugState.threshold).toFixed(3) : '--'
 
     const renderContextCard = () => {
       if (!debugState.finalContextPreview) {
         return (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
-            当前节点没有额外的最终上下文可展示，通常表示本次请求未进入模型生成阶段。
+            当前节点没有额外的最终上下文可展示，通常表示本次请求未进入模型生成阶段。{' '}
           </div>
         )
       }
 
       return (
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">送给模型的最终上下文</div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">发送给模型的最终上下文</div>
           <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm leading-7 text-slate-600 whitespace-pre-wrap break-words">
             {isContextExpanded || debugState.finalContextPreview.length <= 360 ? debugState.finalContextPreview : `${debugState.finalContextPreview.slice(0, 360)}...`}
           </div>
@@ -1088,13 +1114,11 @@ export default function ChatSessionPage() {
             <button onClick={() => setIsContextExpanded((current) => !current)} className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700">
               {isContextExpanded ? (
                 <>
-                  收起上下文
-                  <ChevronUp className="h-3.5 w-3.5" />
+                  收起上下文 <ChevronUp className="h-3.5 w-3.5" />
                 </>
               ) : (
                 <>
-                  展开上下文
-                  <ChevronDown className="h-3.5 w-3.5" />
+                  展开上下文 <ChevronDown className="h-3.5 w-3.5" />
                 </>
               )}
             </button>
@@ -1137,11 +1161,7 @@ export default function ChatSessionPage() {
 
     const renderEvidencePanel = () => {
       if (!selectedTraceItem) {
-        return (
-          <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center text-sm text-slate-500">
-            请选择左侧一个执行步骤，这里会展示对应的判断依据和证据。
-          </div>
-        )
+        return <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center text-sm text-slate-500">请选择左侧一个执行步骤，这里会展示对应的判断依据和证据。 </div>
       }
 
       if (evidenceMode === 'rewrite') {
@@ -1171,15 +1191,13 @@ export default function ChatSessionPage() {
       if (evidenceMode === 'retrieval') {
         return (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">
-              当前正在查看检索结果。下面按相似度从高到低展示本次召回到的全部候选片段。
-            </div>
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">当前正在查看检索结果。下面按得分从高到低展示本次召回到的全部候选片段。 </div>
             <div className="grid gap-4 xl:grid-cols-2">
               {debugState.retrievedChunks.map((item, index) =>
                 renderEvidenceChunkCard(item, index, {
                   showCitationBadge: true,
                   showTopBadge: index === 0,
-                  focusNode: 'retrieve_context',
+                  focusNode: 'retrieve_dense_candidates',
                   highlighted: true,
                 }),
               )}
@@ -1233,7 +1251,7 @@ export default function ChatSessionPage() {
                   onClick={() => setIsGuardChunksExpanded((current) => !current)}
                   className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-medium text-slate-700 transition-colors hover:border-blue-200 hover:bg-blue-50/60"
                 >
-                  <span>查看其他召回片段（{debugState.retrievedChunks.length - 1}）</span>
+                  <span>{`查看其他召回片段（${debugState.retrievedChunks.length - 1}）`}</span>
                   {isGuardChunksExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                 </button>
                 {isGuardChunksExpanded ? (
@@ -1255,12 +1273,14 @@ export default function ChatSessionPage() {
       if (evidenceMode === 'citations') {
         return (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">
-              当前只展示最终真正被答案引用的片段。未引用的召回片段不会出现在这里。
-            </div>
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-3 text-sm leading-7 text-blue-700">当前只展示最终被答案实际引用的片段。未被引用的召回片段不会出现在这里。 </div>
             <div className="grid gap-4 md:grid-cols-3">
               <MetricCard label="最终引用数量" value={String(selectedTraceItem.citedCount ?? citedRetrievedChunks.length)} className="border-blue-200 bg-blue-50/70" />
-              <MetricCard label="引用来源" value={selectedTraceItem.usedFallbackCitations ? '自动兜底引用' : '模型显式引用'} className={selectedTraceItem.usedFallbackCitations ? 'border-amber-200 bg-amber-50/70' : 'border-emerald-200 bg-emerald-50/70'} />
+              <MetricCard
+                label="引用来源"
+                value={selectedTraceItem.usedFallbackCitations ? '自动兜底引用' : '模型显式引用'}
+                className={selectedTraceItem.usedFallbackCitations ? 'border-amber-200 bg-amber-50/70' : 'border-emerald-200 bg-emerald-50/70'}
+              />
               <MetricCard label="最终判定" value={getGraphDecisionLabel(debugState.decision)} />
             </div>
             {citedRetrievedChunks.length > 0 ? (
@@ -1437,7 +1457,7 @@ export default function ChatSessionPage() {
               )}
             >
               <Terminal className="h-3.5 w-3.5" />
-              调试工作区
+              调试工作区{' '}
             </button>
             <button className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
               <MoreHorizontal className="h-4 w-4" />
@@ -1606,7 +1626,9 @@ export default function ChatSessionPage() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">{isDebugOpen ? renderDebugWorkspace() : <div className="mx-auto h-full max-w-5xl overflow-y-auto">{renderPreviewPanel()}</div>}</div>
+            <div className="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">
+              {isDebugOpen ? renderDebugWorkspace() : <div className="mx-auto h-full max-w-5xl overflow-y-auto">{renderPreviewPanel()}</div>}
+            </div>
           </div>
         </div>
       ) : null}

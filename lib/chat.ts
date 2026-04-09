@@ -35,6 +35,16 @@ export function buildChatDebugState(params: {
     chunkIndex: item.chunk_index,
     snippet: item.content,
     score: item.score,
+    guardScore: item.guard_score ?? null,
+    sourceChannels: item.source_channels ?? [],
+    denseScore: item.dense_score ?? null,
+    bm25Score: item.bm25_score ?? null,
+    fusionScore: item.fusion_score ?? null,
+    rerankScore: item.rerank_score ?? null,
+    denseRank: item.dense_rank ?? null,
+    bm25Rank: item.bm25_rank ?? null,
+    fusionRank: item.fusion_rank ?? null,
+    rerankRank: item.rerank_rank ?? null,
     startOffset: null,
     endOffset: null,
     whetherCited: false,
@@ -53,6 +63,8 @@ export function buildChatDebugState(params: {
     llmMs: response.debug?.llm_ms ?? null,
     totalMs: response.debug?.total_ms ?? null,
     embeddingMs: response.debug?.embedding_ms ?? null,
+    rerankEnabled: response.debug?.rerank_enabled ?? null,
+    rejectReason: response.debug?.reject_reason ?? null,
     finalContextPreview: response.debug?.final_context_preview ?? null,
     graphTrace:
       response.debug?.graph_trace.map((item) => ({
@@ -63,9 +75,14 @@ export function buildChatDebugState(params: {
         usedHistory: item.used_history,
         rewrittenQuestion: item.rewritten_question,
         retrievalCount: item.retrieval_count,
+        denseCandidatesCount: item.dense_candidates_count ?? null,
+        bm25CandidatesCount: item.bm25_candidates_count ?? null,
+        fusionCandidatesCount: item.fusion_candidates_count ?? null,
+        rerankApplied: item.rerank_applied ?? null,
         top1Score: item.top1_score,
         threshold: item.threshold,
         decision: item.decision,
+        rejectReason: item.reject_reason ?? null,
         citedCount: item.cited_count,
         usedFallbackCitations: item.used_fallback_citations,
       })) ?? [],
@@ -77,6 +94,16 @@ export function buildChatDebugState(params: {
         chunkIndex: item.chunk_index,
         snippet: item.snippet,
         score: item.score,
+        guardScore: item.guard_score ?? null,
+        sourceChannels: item.source_channels ?? [],
+        denseScore: item.dense_score ?? null,
+        bm25Score: item.bm25_score ?? null,
+        fusionScore: item.fusion_score ?? null,
+        rerankScore: item.rerank_score ?? null,
+        denseRank: item.dense_rank ?? null,
+        bm25Rank: item.bm25_rank ?? null,
+        fusionRank: item.fusion_rank ?? null,
+        rerankRank: item.rerank_rank ?? null,
         startOffset: item.start_offset,
         endOffset: item.end_offset,
         whetherCited: item.whether_cited,
@@ -149,6 +176,16 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
         chunkIndex: item.chunkIndex ?? legacyItem.chunk_index ?? 0,
         snippet: item.snippet ?? legacyItem.content ?? "",
         score: item.score,
+        guardScore: item.guardScore ?? null,
+        sourceChannels: item.sourceChannels ?? [],
+        denseScore: item.denseScore ?? null,
+        bm25Score: item.bm25Score ?? null,
+        fusionScore: item.fusionScore ?? null,
+        rerankScore: item.rerankScore ?? null,
+        denseRank: item.denseRank ?? null,
+        bm25Rank: item.bm25Rank ?? null,
+        fusionRank: item.fusionRank ?? null,
+        rerankRank: item.rerankRank ?? null,
         startOffset: item.startOffset ?? null,
         endOffset: item.endOffset ?? null,
         whetherCited: item.whetherCited ?? false,
@@ -166,9 +203,14 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
         used_history?: boolean;
         rewritten_question?: string;
         retrieval_count?: number;
+        dense_candidates_count?: number;
+        bm25_candidates_count?: number;
+        fusion_candidates_count?: number;
+        rerank_applied?: boolean;
         top1_score?: number;
         threshold?: number;
         decision?: "answer" | "reject";
+        reject_reason?: "no_candidate" | "low_confidence";
         cited_count?: number;
         used_fallback_citations?: boolean;
       }>;
@@ -187,10 +229,20 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
       rewritten_question?: string;
       retrievalCount?: number;
       retrieval_count?: number;
+      denseCandidatesCount?: number;
+      dense_candidates_count?: number;
+      bm25CandidatesCount?: number;
+      bm25_candidates_count?: number;
+      fusionCandidatesCount?: number;
+      fusion_candidates_count?: number;
+      rerankApplied?: boolean;
+      rerank_applied?: boolean;
       top1Score?: number;
       top1_score?: number;
       threshold?: number;
       decision?: "answer" | "reject";
+      rejectReason?: "no_candidate" | "low_confidence";
+      reject_reason?: "no_candidate" | "low_confidence";
       citedCount?: number;
       cited_count?: number;
       usedFallbackCitations?: boolean;
@@ -205,9 +257,17 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
       usedHistory: traceItem.usedHistory ?? traceItem.used_history ?? null,
       rewrittenQuestion: traceItem.rewrittenQuestion ?? traceItem.rewritten_question ?? null,
       retrievalCount: traceItem.retrievalCount ?? traceItem.retrieval_count ?? null,
+      denseCandidatesCount:
+        traceItem.denseCandidatesCount ?? traceItem.dense_candidates_count ?? null,
+      bm25CandidatesCount:
+        traceItem.bm25CandidatesCount ?? traceItem.bm25_candidates_count ?? null,
+      fusionCandidatesCount:
+        traceItem.fusionCandidatesCount ?? traceItem.fusion_candidates_count ?? null,
+      rerankApplied: traceItem.rerankApplied ?? traceItem.rerank_applied ?? null,
       top1Score: traceItem.top1Score ?? traceItem.top1_score ?? null,
       threshold: traceItem.threshold ?? null,
       decision: traceItem.decision ?? null,
+      rejectReason: traceItem.rejectReason ?? traceItem.reject_reason ?? null,
       citedCount: traceItem.citedCount ?? traceItem.cited_count ?? null,
       usedFallbackCitations:
         traceItem.usedFallbackCitations ?? traceItem.used_fallback_citations ?? null,
@@ -227,6 +287,8 @@ function normalizeChatDebugState(rawState: Partial<ChatDebugState>): ChatDebugSt
     llmMs: rawState.llmMs ?? null,
     totalMs: rawState.totalMs ?? null,
     embeddingMs: rawState.embeddingMs ?? null,
+    rerankEnabled: rawState.rerankEnabled ?? null,
+    rejectReason: rawState.rejectReason ?? null,
     finalContextPreview: rawState.finalContextPreview ?? null,
     graphTrace: normalizedGraphTrace,
     retrievedChunks: normalizedChunks,
