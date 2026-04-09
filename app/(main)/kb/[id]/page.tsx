@@ -103,6 +103,8 @@ export default function KBDetailPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [retryingDocumentId, setRetryingDocumentId] = useState<number | null>(null);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<number | null>(null);
+  const [documentDeleteTarget, setDocumentDeleteTarget] = useState<DocumentItem | null>(null);
 
   useEffect(() => {
     const currentToken = token ?? "";
@@ -222,6 +224,63 @@ export default function KBDetailPage() {
       );
     } finally {
       setRetryingDocumentId(null);
+    }
+  }
+
+  async function handleDeleteDocument(document: DocumentItem) {
+    setDocumentDeleteTarget(document);
+    return;
+
+    const currentToken = token ?? "";
+    if (!currentToken) {
+      return;
+    }
+    if (!window.confirm(`确认删除文档“${document.filename}”吗？`)) {
+      return;
+    }
+
+    setDeletingDocumentId(document.id);
+    setUploadError("");
+    try {
+      await documentsApi.delete(currentToken, document.id);
+      const [updatedKnowledgeBase, updatedDocuments] = await Promise.all([
+        kbApi.get(currentToken, knowledgeBaseId),
+        documentsApi.list(currentToken, knowledgeBaseId),
+      ]);
+      setKnowledgeBase(updatedKnowledgeBase);
+      setDocuments(updatedDocuments);
+    } catch (deleteError) {
+      setUploadError(
+        deleteError instanceof ApiError ? deleteError.message : "删除文档失败，请稍后重试。",
+      );
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  }
+
+  async function confirmDeleteDocument() {
+    const currentToken = token ?? "";
+    if (!currentToken || !documentDeleteTarget) {
+      return;
+    }
+
+    setDeletingDocumentId(documentDeleteTarget.id);
+    setUploadError("");
+    try {
+      await documentsApi.delete(currentToken, documentDeleteTarget.id);
+      const [updatedKnowledgeBase, updatedDocuments] = await Promise.all([
+        kbApi.get(currentToken, knowledgeBaseId),
+        documentsApi.list(currentToken, knowledgeBaseId),
+      ]);
+      setKnowledgeBase(updatedKnowledgeBase);
+      setDocuments(updatedDocuments);
+      setDocumentDeleteTarget(null);
+    } catch (deleteError) {
+      setUploadError(
+        deleteError instanceof ApiError ? deleteError.message : "删除文档失败，请稍后重试。",
+      );
+    } finally {
+      setDeletingDocumentId(null);
     }
   }
 
@@ -487,6 +546,28 @@ export default function KBDetailPage() {
                           ) : (
                             <span className="text-xs text-slate-300">-</span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDocument(document)}
+                            disabled={
+                              ["pending", "processing"].includes(document.status) ||
+                              deletingDocumentId === document.id ||
+                              retryingDocumentId === document.id
+                            }
+                            title={
+                              ["pending", "processing"].includes(document.status)
+                                ? "处理中或排队中的文档暂不支持删除"
+                                : "删除文档"
+                            }
+                            className="ml-2 inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                          >
+                            {deletingDocumentId === document.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            删除
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -599,6 +680,45 @@ export default function KBDetailPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {documentDeleteTarget ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">确认删除文档</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">
+                删除后会移除该文档的切片、向量和 BM25 词项索引。这个操作只影响当前文档，不会删除整个知识库。
+              </p>
+            </div>
+
+            <div className="mb-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-sm font-medium text-slate-900">{documentDeleteTarget.filename}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {formatFileType(documentDeleteTarget.file_type)} · {formatDocumentStatus(documentDeleteTarget.status)}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDocumentDeleteTarget(null)}
+                disabled={deletingDocumentId === documentDeleteTarget.id}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteDocument}
+                disabled={deletingDocumentId === documentDeleteTarget.id}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300"
+              >
+                {deletingDocumentId === documentDeleteTarget.id ? "删除中..." : "确认删除"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

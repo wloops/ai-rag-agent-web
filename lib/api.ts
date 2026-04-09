@@ -291,6 +291,12 @@ export const documentsApi = {
       token,
     });
   },
+  delete(token: string, documentId: number) {
+    return request<void>(`/api/documents/${documentId}`, {
+      method: "DELETE",
+      token,
+    });
+  },
 };
 
 export const chatApi = {
