@@ -86,6 +86,7 @@ export function useChatSessionController(): ChatSessionController {
   const params = useParams()
   const conversationId = Number(params.id)
   const { token } = useAuth()
+  const initialManagedStream = Number.isNaN(conversationId) ? null : getManagedChatStreamSnapshot(conversationId)
   const messageListRef = useRef<HTMLDivElement | null>(null)
   const previewRequestIdRef = useRef(0)
   const handledStreamTerminalRef = useRef<string | null>(null)
@@ -93,7 +94,9 @@ export function useChatSessionController(): ChatSessionController {
   const activeStreamHandleRef = useRef<ManagedChatStreamHandle | null>(null)
   const pendingExpectedMessageCountRef = useRef<number | null>(null)
 
-  const [conversation, setConversation] = useState<ConversationItem | null>(null)
+  const [conversation, setConversation] = useState<ConversationItem | null>(
+    () => buildFallbackConversation(conversationId, initialManagedStream),
+  )
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([])
   const [messages, setMessages] = useState<ChatMessageViewModel[]>([])
   const [input, setInput] = useState('')
@@ -297,12 +300,28 @@ export function useChatSessionController(): ChatSessionController {
   const evidenceMode = useMemo<DebugEvidenceMode>(() => getDebugEvidenceMode(selectedTraceNode), [selectedTraceNode])
   const displayMessages = useMemo(() => {
     const items = [...messages]
+    const hasPersistedUserQuestion = activeStream
+      ? messages.some(
+          (message) => message.role === 'user' && message.content.trim() === activeStream.question.trim(),
+        )
+      : false
 
     if (pendingQuestion) {
       items.push({
         id: `pending-user-${conversationId}`,
         role: 'user',
         content: pendingQuestion,
+        citations: [],
+        status: 'streaming',
+      })
+    }
+
+    if (activeStream && activeStream.conversationId === conversationId && !pendingQuestion && !hasPersistedUserQuestion) {
+      // 新建会话时，消息列表首屏可能还没完成接口回填，先把用户问题乐观展示出来。
+      items.push({
+        id: `stream-user-${conversationId}`,
+        role: 'user',
+        content: activeStream.question,
         citations: [],
         status: 'streaming',
       })

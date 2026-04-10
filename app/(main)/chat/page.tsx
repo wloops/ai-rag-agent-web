@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -15,17 +15,19 @@ import {
 import clsx from "clsx";
 
 import { useAuth } from "@/components/auth-provider";
-import { ApiError, kbApi } from "@/lib/api";
+import { ApiError, chatApi, kbApi } from "@/lib/api";
 import { notifyChatSessionsChanged } from "@/lib/chat";
 import { startManagedChatStream } from "@/lib/chat-stream";
 import type { KnowledgeBaseItem } from "@/lib/types";
 
 const DEFAULT_TOP_K = 3;
+const MAX_CONVERSATION_TITLE_LENGTH = 30;
 
 export default function ChatEmptyPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { token } = useAuth();
+  const isComposingRef = useRef(false);
 
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<number | null>(null);
@@ -94,7 +96,30 @@ export default function ChatEmptyPage() {
     [knowledgeBases, selectedKnowledgeBaseId],
   );
 
-  function handleSubmit() {
+  function buildConversationTitle(question: string) {
+    const normalizedQuestion = question.trim();
+    if (!normalizedQuestion) {
+      return null;
+    }
+
+    return normalizedQuestion.slice(0, MAX_CONVERSATION_TITLE_LENGTH);
+  }
+
+  function handleInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      isComposingRef.current
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void handleSubmit();
+  }
+
+  async function handleSubmit() {
     const currentToken = token ?? "";
     const question = input.trim();
     if (!currentToken) {
@@ -112,32 +137,36 @@ export default function ChatEmptyPage() {
     setError("");
     setIsSubmitting(true);
 
-    const handle = startManagedChatStream({
-      token: currentToken,
-      payload: {
+    try {
+      // 先显式创建会话再跳转，避免首条提问要等检索链路启动后才进入会话页。
+      const conversation = await chatApi.createConversation(currentToken, {
         knowledge_base_id: selectedKnowledgeBaseId,
-        question,
-        top_k: DEFAULT_TOP_K,
-        debug: true,
-      },
-      onStart: (conversationId) => {
-        notifyChatSessionsChanged();
-        router.push(`/chat/${conversationId}`);
-      },
-      onError: (message) => {
-        setError(message);
-      },
-    });
-
-    void handle.promise
-      .catch((submitError) => {
-        setError(
-          submitError instanceof ApiError ? submitError.message : "提问失败，请稍后重试。",
-        );
-      })
-      .finally(() => {
-        setIsSubmitting(false);
+        title: buildConversationTitle(question),
       });
+
+      notifyChatSessionsChanged();
+      router.push(`/chat/${conversation.id}`);
+
+      const handle = startManagedChatStream({
+        token: currentToken,
+        payload: {
+          knowledge_base_id: selectedKnowledgeBaseId,
+          conversation_id: conversation.id,
+          question,
+          top_k: DEFAULT_TOP_K,
+          debug: true,
+        },
+      });
+
+      void handle.promise.catch(() => {
+        // 错误状态会写入 managed stream，会话页接管后会直接展示失败信息。
+      });
+    } catch (submitError) {
+      setError(
+        submitError instanceof ApiError ? submitError.message : "提问失败，请稍后重试。",
+      );
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -211,6 +240,14 @@ export default function ChatEmptyPage() {
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleInputKeyDown}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false;
+              }}
+              disabled={isSubmitting}
               className="min-h-[80px] w-full resize-none bg-transparent p-4 text-sm text-slate-900 outline-none placeholder:text-slate-400"
               placeholder="输入你的问题，系统会基于知识库执行 RAG 检索..."
             />
@@ -229,19 +266,24 @@ export default function ChatEmptyPage() {
                   <ChevronDown className="h-3 w-3 opacity-50" />
                 </div>
               </div>
-              <button
-                onClick={handleSubmit}
-                disabled={!input.trim() || !selectedKnowledgeBaseId || isSubmitting}
-                className={clsx(
-                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium shadow-sm transition-all",
-                  input.trim() && selectedKnowledgeBaseId && !isSubmitting
-                    ? "bg-blue-600 text-white hover:bg-blue-700"
-                    : "cursor-not-allowed bg-slate-200 text-slate-400",
-                )}
-              >
-                {isSubmitting ? "发送中" : "发送"}
-                <Send className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex items-center gap-3">
+                <div className="hidden text-[11px] text-slate-400 sm:block">
+                  Enter 发送，Shift+Enter 换行
+                </div>
+                <button
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || !selectedKnowledgeBaseId || isSubmitting}
+                  className={clsx(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium shadow-sm transition-all",
+                    input.trim() && selectedKnowledgeBaseId && !isSubmitting
+                      ? "bg-blue-600 text-white hover:bg-blue-700"
+                      : "cursor-not-allowed bg-slate-200 text-slate-400",
+                  )}
+                >
+                  {isSubmitting ? "发送中" : "发送"}
+                  <Send className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           </div>
           {error ? (

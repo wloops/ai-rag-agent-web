@@ -38,9 +38,31 @@ const managedStreams = new Map<number, ManagedChatStreamEntry>();
 export function startManagedChatStream(
   params: StartManagedChatStreamParams,
 ): ManagedChatStreamHandle {
-  let startedConversationId: number | null = null;
+  const seededConversationId = params.payload.conversation_id ?? null;
+  let startedConversationId: number | null = seededConversationId;
   let aborted = false;
   const abortController = new AbortController();
+
+  if (seededConversationId !== null) {
+    const existingListeners =
+      managedStreams.get(seededConversationId)?.listeners ??
+      new Set<ManagedChatStreamListener>();
+
+    managedStreams.set(seededConversationId, {
+      listeners: existingListeners,
+      snapshot: {
+        conversationId: seededConversationId,
+        answer: "",
+        question: params.payload.question,
+        knowledgeBaseId: params.payload.knowledge_base_id,
+        status: "streaming",
+        error: null,
+        finalResponse: null,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    notifyManagedChatStream(seededConversationId);
+  }
 
   const promise = chatApi
     .askStream(
@@ -52,13 +74,15 @@ export function startManagedChatStream(
           const existingListeners =
             managedStreams.get(payload.conversation_id)?.listeners ??
             new Set<ManagedChatStreamListener>();
+          const existingSnapshot = managedStreams.get(payload.conversation_id)?.snapshot;
           managedStreams.set(payload.conversation_id, {
             listeners: existingListeners,
             snapshot: {
               conversationId: payload.conversation_id,
-              answer: "",
-              question: params.payload.question,
-              knowledgeBaseId: params.payload.knowledge_base_id,
+              answer: existingSnapshot?.answer ?? "",
+              question: existingSnapshot?.question ?? params.payload.question,
+              knowledgeBaseId:
+                existingSnapshot?.knowledgeBaseId ?? params.payload.knowledge_base_id,
               status: "streaming",
               error: null,
               finalResponse: null,
@@ -124,6 +148,16 @@ export function startManagedChatStream(
         (error as { name?: string }).name === "AbortError"
       ) {
         return;
+      }
+
+      const failedConversationId = startedConversationId;
+      if (failedConversationId !== null) {
+        updateManagedChatStream(failedConversationId, (snapshot) => ({
+          ...snapshot,
+          status: "error",
+          error: error instanceof Error ? error.message : "发送失败，请稍后重试。",
+          updatedAt: new Date().toISOString(),
+        }));
       }
 
       throw error;

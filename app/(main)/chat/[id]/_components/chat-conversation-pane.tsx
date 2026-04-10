@@ -2,6 +2,7 @@
 
 import clsx from 'clsx'
 import { Bot, ChevronDown, ChevronUp, Database, FileText, Layers, Send, User } from 'lucide-react'
+import { useRef } from 'react'
 import type { Dispatch, RefObject, SetStateAction } from 'react'
 
 import { formatDateTime } from '@/lib/format'
@@ -48,11 +49,29 @@ export function ChatConversationPane({
   isSending: boolean
   canSend: boolean
 }) {
+  const isComposingRef = useRef(false)
+
+  function handleInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      isComposingRef.current
+    ) {
+      return
+    }
+
+    event.preventDefault()
+    if (canSend) {
+      onSend()
+    }
+  }
+
   return (
     <>
       <div ref={messageListRef} className="flex-1 space-y-8 overflow-y-auto p-6">
         {error ? <div className="mx-auto max-w-4xl rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
-        {isLoading ? (
+        {isLoading && displayMessages.length === 0 ? (
           <EmptyState text="正在加载会话内容..." />
         ) : displayMessages.length === 0 ? (
           <EmptyState text="该会话还没有消息。" />
@@ -172,6 +191,13 @@ export function ChatConversationPane({
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={handleInputKeyDown}
+            onCompositionStart={() => {
+              isComposingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false
+            }}
             className="min-h-[80px] w-full resize-none bg-transparent p-4 text-sm text-slate-900 outline-none placeholder:text-slate-400"
             placeholder="继续输入问题，系统将基于当前知识库继续检索回答..."
           />
@@ -180,17 +206,20 @@ export function ChatConversationPane({
               <Database className="h-4 w-4" />
               <span className="hidden sm:inline">{knowledgeBaseName}</span>
             </div>
-            <button
-              onClick={onSend}
-              disabled={!canSend}
-              className={clsx(
-                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium shadow-sm transition-all',
-                canSend ? 'bg-blue-600 text-white hover:bg-blue-700' : 'cursor-not-allowed bg-slate-200 text-slate-400',
-              )}
-            >
-              {isSending ? '发送中' : '发送'}
-              <Send className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex items-center gap-3">
+              <div className="hidden text-[11px] text-slate-400 sm:block">Enter 发送，Shift+Enter 换行</div>
+              <button
+                onClick={onSend}
+                disabled={!canSend}
+                className={clsx(
+                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium shadow-sm transition-all',
+                  canSend ? 'bg-blue-600 text-white hover:bg-blue-700' : 'cursor-not-allowed bg-slate-200 text-slate-400',
+                )}
+              >
+                {isSending ? '发送中' : '发送'}
+                <Send className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

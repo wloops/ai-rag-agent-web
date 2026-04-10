@@ -300,6 +300,16 @@ export const documentsApi = {
 };
 
 export const chatApi = {
+  createConversation(
+    token: string,
+    payload: { knowledge_base_id: number; title?: string | null },
+  ) {
+    return request<ConversationItem>("/api/chat/conversations", {
+      method: "POST",
+      token,
+      body: payload,
+    });
+  },
   listConversations(token: string) {
     return request<ConversationItem[]>("/api/chat/conversations", {
       token,
