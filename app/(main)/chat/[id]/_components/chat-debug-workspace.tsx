@@ -425,8 +425,8 @@ export function ChatDebugWorkspace({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="flex min-h-full flex-col gap-4 xl:h-full xl:min-h-0 xl:gap-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 xl:p-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="max-w-3xl">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">本次问题</div>
@@ -441,7 +441,7 @@ export function ChatDebugWorkspace({
             <span className={debugState.decision === 'reject' ? 'text-amber-700' : 'text-emerald-700'}>{getGraphDecisionLabel(debugState.decision)}</span>
           </div>
         </div>
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
           <MetricCard label="最高相似度" value={formatScore(debugState.top1Score)} className="border-emerald-200 bg-emerald-50/70" />
           <MetricCard label="拒答阈值" value={formatScore(debugState.threshold)} className="border-amber-200 bg-amber-50/70" />
           <MetricCard label="最终引用" value={String(citedRetrievedChunks.length)} className="border-blue-200 bg-blue-50/70" />
@@ -451,8 +451,8 @@ export function ChatDebugWorkspace({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <div className="flex min-h-0 flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[360px_minmax(0,1fr)] xl:gap-6">
+        <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm xl:flex xl:min-h-0 xl:flex-col">
           <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-2 pb-3">
             <div>
               <div className="text-sm font-semibold text-slate-900">执行流程</div>
@@ -460,7 +460,7 @@ export function ChatDebugWorkspace({
             </div>
             <div className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-500">{debugState.graphTrace.length} 步</div>
           </div>
-          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-2 pb-4">
+          <div className="mt-4 space-y-3 pr-1 pb-1 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2 xl:pb-4">
             {debugState.graphTrace.map((item, index) => {
               const summaryRows = buildTraceSummaryRows(item).slice(0, 2)
               const isSelected = selectedTraceNode === item.node
@@ -512,7 +512,7 @@ export function ChatDebugWorkspace({
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-col rounded-3xl border border-slate-200 bg-slate-50/70 p-5 shadow-sm">
+        <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4 shadow-sm sm:p-5 xl:flex xl:min-h-0 xl:flex-col">
           <div className="flex flex-col gap-2 border-b border-slate-200 pb-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
               <Search className="h-4 w-4 text-blue-600" />
@@ -520,7 +520,7 @@ export function ChatDebugWorkspace({
             </div>
             {selectedTraceItem ? <div className="text-sm leading-6 text-slate-500">{getTraceChunkHint(selectedTraceItem)}</div> : null}
           </div>
-          <div className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto pr-2 pb-4">
+          <div className="mt-5 space-y-5 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2 xl:pb-4">
             {renderEvidencePanel()}
             {renderChunkPreviewCard()}
           </div>

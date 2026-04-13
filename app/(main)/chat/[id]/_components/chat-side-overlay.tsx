@@ -37,8 +37,8 @@ export function ChatSideOverlay({
   const isDebugOpen = activeRightPanel === 'debug'
 
   return (
-    <div className="absolute inset-0 z-30 bg-slate-950/30 p-3 backdrop-blur-sm sm:p-4">
-      <div className="flex h-full flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-slate-100 shadow-2xl shadow-slate-950/10">
+    <div className="absolute inset-0 z-30 bg-slate-950/30 p-2 backdrop-blur-sm sm:p-3 lg:p-4">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-slate-100 shadow-2xl shadow-slate-950/10">
         <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-5">
           <div className="flex min-w-0 items-center gap-3">
             {isDebugOpen ? <Terminal className="h-4 w-4 text-blue-600" /> : <FileText className="h-4 w-4 text-blue-600" />}
@@ -51,8 +51,12 @@ export function ChatSideOverlay({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden p-4 sm:p-6">
-          {isDebugOpen ? debugWorkspace : <div className="mx-auto h-full max-w-5xl overflow-y-auto">{renderPreviewPanel(selectedPreviewSource, citationPreview, previewSegments, isPreviewLoading, previewError)}</div>}
+        <div className={isDebugOpen ? 'min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6' : 'min-h-0 flex-1 overflow-hidden p-4 sm:p-6'}>
+          {isDebugOpen ? (
+            <div className="mx-auto w-full max-w-7xl">{debugWorkspace}</div>
+          ) : (
+            <div className="mx-auto h-full max-w-5xl overflow-y-auto">{renderPreviewPanel(selectedPreviewSource, citationPreview, previewSegments, isPreviewLoading, previewError)}</div>
+          )}
         </div>
       </div>
     </div>
